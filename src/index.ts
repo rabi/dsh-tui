@@ -153,6 +153,32 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     })
     return { kind: 'success', text: `model: ${describeModel(next)}` }
   }
+  // Settings are the source of truth here, so a reload applies the stored
+  // default without writing it back; /model keeps saving because the session
+  // chose it.
+  const handleReloadCommand = async (): Promise<CommandResult> => {
+    if (llm === undefined) return { kind: 'error', text: 'no llm service is composed' }
+    const next = defaultModel.currentSelection()
+    const current = currentSelection
+    if (current.provider === next.provider && current.model === next.model
+      && (current.reasoningEffort ?? undefined) === (next.reasoningEffort ?? undefined)) {
+      return { kind: 'success', text: `unchanged: ${describeModel(current)}` }
+    }
+    const resolved = await llm.resolveCallConfig({
+      provider: next.provider,
+      model: next.model,
+      ...(next.reasoningEffort === undefined ? {} : { reasoningEffort: next.reasoningEffort }),
+    })
+    const applied: ModelSelection = {
+      provider: resolved.provider,
+      model: resolved.model,
+      ...(resolved.reasoningEffort === undefined ? {} : { reasoningEffort: resolved.reasoningEffort }),
+    }
+    currentSelection = applied
+    selectionRef.current = applied
+    agent.session.append('model/selection', applied)
+    return { kind: 'success', text: `reloaded: ${describeModel(applied)}` }
+  }
   if (commands !== undefined) {
     ctx.effect(() => commands.register({
       name: 'model',
@@ -160,6 +186,11 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       input: { hint: '[list | provider/model]' },
       handler: invocation => handleModelCommand(invocation.rawInput),
     }), 'tui-model-command')
+    ctx.effect(() => commands.register({
+      name: 'reload',
+      description: 'Re-read the default model selection from settings and apply it to this session',
+      handler: () => handleReloadCommand(),
+    }), 'tui-reload-command')
   }
 
   let shuttingDown = false
@@ -242,7 +273,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
         return
       }
       if (text === '/help') {
-        tui.addNote('commands: /help · /clear · /compact · /model · /feedback · /goal · /exit · /<skill>')
+        tui.addNote('commands: /help · /clear · /compact · /model · /reload · /feedback · /goal · /exit · /<skill>')
         tui.addNote('keys: ⏎ send · shift+⏎ newline · ^c cancel/quit · ^d quit')
         return
       }

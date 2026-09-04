@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
-import AgentDefaultModelConfig from '@deepseek-ai/dsh-agent-default-model'
+import AgentDefaultModelConfig, { AGENT_DEFAULT_MODEL_SETTINGS_NAMESPACE } from '@deepseek-ai/dsh-agent-default-model'
 import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { CommandId } from '@deepseek-ai/dsh-commands/brand'
@@ -148,6 +148,10 @@ interface Bench {
   cancels(): Array<{ kind: string }>
   registeredCommands: Array<{ name: string; handler: (invocation: { rawInput: string }) => unknown }>
   transcriptText(): string
+  /** Swap the stored agent-default-model settings section, like an edited settings file. */
+  setDefaultModel(section: { provider: string; model: string; reasoningEffort?: string }): void
+  /** Count of settings.replace calls (model-default saves). */
+  replaceCalls(): number
   run(): BenchRun
   submit(text: string): void
   press(data: string): void
@@ -166,21 +170,38 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
         if (benchOptions.failLlmInfo) throw new Error('offline adapter')
         return { context: { contextWindow: 164_000 } }
       },
-      resolveCallConfig: async (config: { provider: string; model: string }): Promise<unknown> =>
-        config.model === 'effort-model' ? { ...config, reasoningEffort: 'high' } : config,
+      resolveCallConfig: async (config: { provider: string; model: string }): Promise<unknown> => {
+        if (config.model === 'gone-model') throw new Error('model gone from the catalog')
+        return config.model === 'effort-model' ? { ...config, reasoningEffort: 'high' } : config
+      },
       listModels: async (provider: string): Promise<unknown[]> =>
         benchOptions.emptyModels
           ? []
           : [{ provider, id: 'test-model', name: 'Test Model' }, { provider, id: 'other-model', name: 'Other Model' }],
     } as never)
   }
-  if (benchOptions.failSettingsWith !== undefined) {
-    ctx.provide('settings', {
-      replace: async (): Promise<never> => {
-        throw benchOptions.failSettingsWith
-      },
-    } as never)
-  }
+  // Stateful stand-in for the settings service: installSection captures each
+  // namespace's base entry and replace swaps its user layer, mirroring the
+  // watcher-driven source swap an edited settings file causes.
+  interface SettingsHooks { setSource: (read: () => unknown) => void; onChange?: () => void }
+  const settingsSections = new Map<string, { base: unknown; user: unknown; onChange?: () => void }>()
+  let replaceCallCount = 0
+  ctx.provide('settings', {
+    installSection: (_owner: unknown, ns: string, _schema: unknown, entry: unknown, hooks: SettingsHooks): void => {
+      const section = { base: entry, user: {} as unknown, onChange: hooks.onChange }
+      settingsSections.set(ns, section)
+      hooks.setSource(() => ({ ...(section.base as object), ...(section.user as object) }))
+      hooks.onChange?.()
+    },
+    replace: async (ns: string, section: object): Promise<void> => {
+      if (benchOptions.failSettingsWith !== undefined) throw benchOptions.failSettingsWith
+      const target = settingsSections.get(ns)
+      if (target === undefined) throw new Error(`unknown settings namespace ${ns}`)
+      replaceCallCount += 1
+      target.user = section
+      target.onChange?.()
+    },
+  } as never)
   if (benchOptions.skills !== undefined || benchOptions.failSkills) {
     ctx.provide('skills', {
       list: async (): Promise<unknown> => {
@@ -319,6 +340,13 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
       const transcript = captured.screens[0]?.children[0] as { render(width: number): string[] } | undefined
       return transcript === undefined ? '' : transcript.render(200).join('\n')
     },
+    setDefaultModel: (section: { provider: string; model: string; reasoningEffort?: string }): void => {
+      const target = settingsSections.get(AGENT_DEFAULT_MODEL_SETTINGS_NAMESPACE)
+      if (target === undefined) throw new Error('agent-default-model section not installed')
+      target.user = section
+      target.onChange?.()
+    },
+    replaceCalls: (): number => replaceCallCount,
     run: () => {
       captured.inputListeners.length = 0
       captured.editors.length = 0
@@ -687,6 +715,52 @@ describe('tui runner', () => {
     await waitFor(() => test.transcriptText().includes('model: test-provider/effort-model (high)'), 'the effort switch note')
     test.submit('/model test-provider/')
     await waitFor(() => test.transcriptText().includes('error: usage: /model [list | provider/model]'), 'the usage error')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('reloads the default model selection from settings without saving it back', async () => {
+    const test = await bench({ startup: {} })
+    const running = test.run()
+    await running.mounted
+    test.submit('/reload')
+    await waitFor(() => test.transcriptText().includes('unchanged: test-provider/test-model'), 'the unchanged note')
+    test.setDefaultModel({ provider: 'test-provider', model: 'other-model' })
+    test.submit('/reload')
+    await waitFor(() => test.transcriptText().includes('reloaded: test-provider/other-model'), 'the reload note')
+    expect(test.replaceCalls()).toBe(0)
+    const status = captured.screens[0]?.children[3] as { render(width: number): string[] } | undefined
+    if (status === undefined) throw new Error('status line not mounted')
+    expect(status.render(200)[0]).toContain('other-model')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('errors /reload when no llm service is composed', async () => {
+    const test = await bench({ startup: {}, noLlm: true })
+    const running = test.run()
+    await running.mounted
+    test.submit('/reload')
+    await waitFor(() => test.transcriptText().includes('error: no llm service is composed'), 'the reload error')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('reloads a reasoning effort stored in settings and keeps the session on failure', async () => {
+    const test = await bench({ startup: {} })
+    const running = test.run()
+    await running.mounted
+    test.setDefaultModel({ provider: 'test-provider', model: 'effort-model', reasoningEffort: 'high' })
+    test.submit('/reload')
+    await waitFor(() => test.transcriptText().includes('reloaded: test-provider/effort-model (high)'), 'the effort reload note')
+    test.setDefaultModel({ provider: 'test-provider', model: 'gone-model' })
+    test.submit('/reload')
+    await waitFor(() => test.transcriptText().includes('error: model gone from the catalog'), 'the reload error')
+    test.submit('/model')
+    await waitFor(() => test.transcriptText().includes('model: test-provider/effort-model (high)'), 'the post-failure model note')
     test.submit('/exit')
     expect(await running.code).toBe(0)
     await test.ctx.fiber.dispose()
