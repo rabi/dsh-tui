@@ -1,0 +1,42 @@
+{
+  "extends": "../deepseek-harness/tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../deepseek-harness/vendor/cordis"
+    },
+    {
+      "path": "../deepseek-harness/vendor/loader"
+    },
+    {
+      "path": "../deepseek-harness/packages/core/agent"
+    },
+    {
+      "path": "../deepseek-harness/packages/core/agent-default-model"
+    },
+    {
+      "path": "../deepseek-harness/packages/llm/llm"
+    },
+    {
+      "path": "../deepseek-harness/packages/core/session"
+    },
+    {
+      "path": "../deepseek-harness/packages/boot/cmdline"
+    },
+    {
+      "path": "../deepseek-harness/packages/interaction/user-approval"
+    },
+    {
+      "path": "../deepseek-harness/packages/interaction/commands"
+    },
+    {
+      "path": "../deepseek-harness/packages/skill/skill"
+    }
+  ]
+}

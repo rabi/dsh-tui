@@ -1,0 +1,4 @@
+{
+  "extends": "../deepseek-harness/tsconfig.base.json",
+  "include": ["src/**/*", "tests/**/*", "../deepseek-harness/packages/**/src/**/*", "../deepseek-harness/vendor/**/src/**/*"]
+}

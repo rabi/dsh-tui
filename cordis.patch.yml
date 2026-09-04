@@ -1,0 +1,20 @@
+# The dsh-tui bundle patch: the interactive terminal surface over dsh-base.
+# It mounts no Host, HTTP server, Web runtime, or browser plugin. The tui-startup
+# plugin injects `cmdlineArgs`, parses `--session`/`--resume` and this app's
+# --help, then publishes `tuiStartup`; the tui-runner row injects that service,
+# creates (or resumes) one Agent through the core registry, and mounts the
+# pi-style TUI over its session log.
+
+- id: system-prompt
+  config:
+    persona: >-
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+
+- insert:
+    - id: tui-startup
+      name: '@deepseek-ai/dsh-tui/startup'
+
+    # Reads its startup values from the ordinary tuiStartup provider.
+    - id: tui-runner
+      name: '@deepseek-ai/dsh-tui'
+      inject: [tuiStartup]
