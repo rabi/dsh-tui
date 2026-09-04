@@ -125,6 +125,8 @@ interface BenchOptions {
   failCommands?: boolean
   /** Report an empty model catalog from listModels. */
   emptyModels?: boolean
+  /** Report no providers at all from listProviders. */
+  noProviders?: boolean
   /** Reject settings.replace with this value so saving the model default fails. */
   failSettingsWith?: unknown
   /** Skill catalog for the /name invocation check; 'observation' makes list() return a non-array observation. */
@@ -174,10 +176,15 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
         if (config.model === 'gone-model') throw new Error('model gone from the catalog')
         return config.model === 'effort-model' ? { ...config, reasoningEffort: 'high' } : config
       },
-      listModels: async (provider: string): Promise<unknown[]> =>
-        benchOptions.emptyModels
+      listModels: async (provider: string): Promise<unknown[]> => {
+        if (benchOptions.emptyModels) return []
+        if (provider === 'alt-provider') return [{ provider, id: 'alt-model', name: 'Alt Model' }]
+        return [{ provider, id: 'test-model', name: 'Test Model' }, { provider, id: 'other-model', name: 'Other Model' }]
+      },
+      listProviders: (): unknown[] =>
+        benchOptions.noProviders
           ? []
-          : [{ provider, id: 'test-model', name: 'Test Model' }, { provider, id: 'other-model', name: 'Other Model' }],
+          : [{ id: 'test-provider', name: 'Test Provider' }, { id: 'alt-provider', name: 'Alt Provider' }],
     } as never)
   }
   // Stateful stand-in for the settings service: installSection captures each
@@ -702,9 +709,11 @@ describe('tui runner', () => {
     const running = test.run()
     await running.mounted
     test.submit('/model')
-    await waitFor(() => test.transcriptText().includes('model: test-provider/test-model'), 'the current model note')
+    await waitFor(() => test.transcriptText().includes('model: test-provider/test-model — /model list · /model <id>'), 'the current model note')
     test.submit('/model list')
-    await waitFor(() => test.transcriptText().includes('* test-model'), 'the model list')
+    await waitFor(() => test.transcriptText().includes('test-provider: * test-model, other-model'), 'the model list')
+    // A multi-line result renders one note per provider.
+    await waitFor(() => test.transcriptText().includes('alt-provider: alt-model'), 'the second provider note')
     test.submit('/model test-provider/new-model')
     await waitFor(() => test.transcriptText().includes('model: test-provider/new-model'), 'the switch note')
     const status = captured.screens[0]?.children[3] as { render(width: number): string[] } | undefined
@@ -847,6 +856,7 @@ describe('tui runner', () => {
       handler: async (invocation) => {
         if (invocation.rawInput === 'err') throw new Error('bare boom')
         if (invocation.rawInput === 'silent') throw Symbol('silent')
+        if (invocation.rawInput === 'blank') return { kind: 'success', text: 'first\n\nsecond' }
         return 'plain'
       },
     })
@@ -856,6 +866,12 @@ describe('tui runner', () => {
     await waitFor(() => test.transcriptText().includes('error: bare boom'), 'the error note')
     test.submit('/bare silent')
     await waitFor(() => test.transcriptText().includes('error: command failed'), 'the textless error note')
+    // Blank lines inside a result render no note of their own.
+    test.submit('/bare blank')
+    await waitFor(() => {
+      const lines = test.transcriptText().replace(/\u001b\[[0-9;]*m/g, '').split('\n')
+      return lines.includes(' first') && lines.includes(' second') && !lines.includes(' ')
+    }, 'the split blank-line notes')
     test.submit('/exit')
     expect(await running.code).toBe(0)
     await test.ctx.fiber.dispose()
@@ -864,7 +880,8 @@ describe('tui runner', () => {
   it('reports a missing llm service and an empty catalog from /model', async () => {
     for (const [options, expected] of [
       [{ noLlm: true }, 'error: no llm service is composed'],
-      [{ emptyModels: true }, 'no models reported for test-provider'],
+      [{ emptyModels: true }, 'test-provider: (no models)'],
+      [{ noProviders: true }, 'no providers registered'],
     ] as const) {
       const test = await bench({ startup: {}, ...options })
       const running = test.run()

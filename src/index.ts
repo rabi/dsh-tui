@@ -125,15 +125,21 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     `${next.provider}/${next.model}${next.reasoningEffort === undefined ? '' : ` (${next.reasoningEffort})`}`
   const handleModelCommand = async (rawInput: string): Promise<CommandResult> => {
     const arg = rawInput.trim()
-    if (arg === '') return { kind: 'success', text: `model: ${describeModel(currentSelection)}` }
+    if (arg === '') return { kind: 'success', text: `model: ${describeModel(currentSelection)} — /model list · /model <id>` }
     if (llm === undefined) return { kind: 'error', text: 'no llm service is composed' }
     if (arg === 'list') {
-      const models = await llm.listModels(currentSelection.provider)
-      if (models.length === 0) return { kind: 'success', text: `no models reported for ${currentSelection.provider}` }
-      return {
-        kind: 'success',
-        text: models.map(m => `${m.id === currentSelection.model ? '*' : ' '} ${m.id}`).join(' · '),
-      }
+      const providers = llm.listProviders()
+      if (providers.length === 0) return { kind: 'success', text: 'no providers registered' }
+      // One line per provider: notes are single-line, and the current model's
+      // marker needs its provider to disambiguate same-named ids.
+      const sections = await Promise.all(providers.map(async (provider) => {
+        const models = await llm.listModels(provider.id)
+        const entries = models.length === 0
+          ? '(no models)'
+          : models.map(m => m.id === currentSelection.model && provider.id === currentSelection.provider ? `* ${m.id}` : m.id).join(', ')
+        return `${provider.id}: ${entries}`
+      }))
+      return { kind: 'success', text: sections.join('\n') }
     }
     const slash = arg.indexOf('/')
     const provider = slash > 0 ? arg.slice(0, slash) : currentSelection.provider
@@ -339,7 +345,9 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
         return
       case 'command/done': {
         const { kind, text } = event.data
-        tui.addNote(kind === 'success' ? (text ?? 'done') : `error: ${text ?? 'command failed'}`)
+        // Notes are single-line, so a multi-line result renders one note per line.
+        const body = kind === 'success' ? (text ?? 'done') : `error: ${text ?? 'command failed'}`
+        for (const line of body.split('\n')) if (line !== '') tui.addNote(line)
         return
       }
       case 'model/selection':
