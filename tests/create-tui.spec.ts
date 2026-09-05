@@ -191,6 +191,7 @@ describe('createTui', () => {
     expect(line()).toContain('⏎ send')
     expect(line()).toContain('tab complete')
     expect(line()).toContain('^x copy')
+    expect(line()).toContain('^g edit')
     expect(line()).toContain('^c/^d quit')
     expect(line()).not.toContain('esc/^c cancel')
     test.setRunning(true)
@@ -198,6 +199,7 @@ describe('createTui', () => {
     expect(line()).toContain('esc/^c cancel')
     expect(line()).not.toContain('alt+↑ dequeue')
     expect(line()).not.toContain('⏎ send')
+    expect(line()).not.toContain('^g edit')
     test.setQueue(['queued one'])
     expect(line()).toContain('alt+↑ dequeue')
     test.setRunning(false)
@@ -267,6 +269,54 @@ describe('createTui', () => {
     expect(key('\x18')).toEqual({ consume: true })
     const streamed = `\x1b]52;c${Buffer.from('streamed answer', 'utf8').toString('base64')}\x07`
     expect(writeSpy).toHaveBeenLastCalledWith(streamed)
+  })
+
+  it('opens the external editor on Ctrl+G, suspending then resuming the TUI', async () => {
+    const seq: string[] = []
+    const test = mount({
+      editText: async (initial: string): Promise<string | undefined> => {
+        seq.push(`edit:${initial}`)
+        return 'edited text'
+      },
+    })
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    vi.spyOn(test.screen, 'stop').mockImplementation(() => { seq.push('stop') })
+    vi.spyOn(test.screen, 'start').mockImplementation(() => { seq.push('start') })
+    test.editor.setText('draft')
+    expect(key('\x07')).toEqual({ consume: true })
+    await new Promise(r => setTimeout(r, 0))
+    // Suspend first, run the editor on the current text, resume last.
+    expect(seq).toEqual(['stop', 'edit:draft', 'start'])
+    expect(test.editor.getText()).toBe('edited text')
+  })
+
+  it('keeps the original text when the external editor is cancelled', async () => {
+    const test = mount({
+      editText: async (): Promise<string | undefined> => undefined,
+    })
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    const startSpy = vi.spyOn(test.screen, 'start')
+    test.editor.setText('keep me')
+    expect(key('\x07')).toEqual({ consume: true })
+    await new Promise(r => setTimeout(r, 0))
+    expect(test.editor.getText()).toBe('keep me')
+    expect(startSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes the TUI even when the external editor fails to launch', async () => {
+    const test = mount({
+      editText: async (): Promise<string | undefined> => { throw new Error('spawn failed') },
+    })
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    const startSpy = vi.spyOn(test.screen, 'start')
+    test.editor.setText('original')
+    expect(key('\x07')).toEqual({ consume: true })
+    await new Promise(r => setTimeout(r, 0))
+    expect(test.editor.getText()).toBe('original')
+    expect(startSpy).toHaveBeenCalledTimes(1)
   })
 
   it('routes Escape to cancel while running and passes it through idle', () => {

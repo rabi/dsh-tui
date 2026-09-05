@@ -23,6 +23,7 @@ import {
   type SlashCommand,
 } from '@earendil-works/pi-tui'
 import { createGitStatus } from './git.ts'
+import { runExternalEditor } from './external-editor.ts'
 
 /** One-line ANSI style helpers for the fixed dark-on-light terminal palette. */
 const S = {
@@ -444,6 +445,12 @@ export interface TuiOptions {
   gitCwd?: string
   /** Slash commands offered by the editor's autocomplete; re-read on every suggestion request. Omit to disable it. */
   commands?: () => readonly SlashCommand[]
+  /**
+   * Edit text in an external editor and resolve to the result (or `undefined`
+   * when the user cancelled / the editor failed). Defaults to the process
+   * editor (`$VISUAL`/`$EDITOR`/`vi`); inject a stub in tests.
+   */
+  editText?: (initial: string) => Promise<string | undefined>
 }
 
 /** The mounted TUI surface and its transcript API. */
@@ -561,7 +568,7 @@ export function createTui(options: TuiOptions): TuiHandle {
     // queued follow-ups back) is what matters; idle, the input shortcuts.
     const hints = running
       ? ['esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
-      : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^c/^d quit']
+      : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^g edit', '^c/^d quit']
     return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText}${tpsText}${cacheText} · ${hints.join(' · ')}`
   })
   let timer: ReturnType<typeof setInterval> | undefined
@@ -574,6 +581,21 @@ export function createTui(options: TuiOptions): TuiHandle {
       tui.requestRender()
     } else if (running) {
       tui.requestRender()
+    }
+  }
+  /** Clear the spinner timer (idempotent); used on shutdown and while suspended. */
+  const stopSpinner = (): void => {
+    if (timer !== undefined) {
+      clearInterval(timer)
+      timer = undefined
+    }
+  }
+  /** Restart the spinner timer if it is not already running. */
+  const startSpinner = (): void => {
+    if (timer === undefined) {
+      timer = setInterval(tick, SPIN_MS)
+      // The terminal's stdin handle keeps the process alive; the spinner must not.
+      timer.unref()
     }
   }
   const editor = new Editor(tui, EDITOR_THEME)
@@ -611,6 +633,28 @@ export function createTui(options: TuiOptions): TuiHandle {
       // Cancel clears the inbox, so the captured texts are the only copy left.
       const existing = editor.getText()
       editor.setText(queued.join('\n\n') + (existing === '' ? '' : `\n\n${existing}`))
+      tui.requestRender()
+    }
+  }
+  const editText = options.editText ?? runExternalEditor
+  /**
+   * Suspend the TUI, run the external editor on a temp file seeded with the
+   * current text, restore the TUI, and adopt the edited text. The terminal is
+   * re-entered and re-rendered even if the editor fails to launch, and a
+   * cancelled edit (no result) leaves the original text in place.
+   */
+  const openExternalEditor = async (): Promise<void> => {
+    const original = editor.getText()
+    stopSpinner()
+    tui.stop()
+    try {
+      const edited = await editText(original)
+      if (edited !== undefined) editor.setText(edited)
+    } catch {
+      // A launch failure keeps the original text; the TUI still resumes below.
+    } finally {
+      tui.start()
+      startSpinner()
       tui.requestRender()
     }
   }
@@ -652,6 +696,12 @@ export function createTui(options: TuiOptions): TuiHandle {
       if (text !== '') tui.terminal.write(osc52Copy(text))
       return { consume: true }
     }
+    // Ctrl+G opens the current text in the external editor ($VISUAL/$EDITOR,
+    // default vi); the TUI suspends while it runs and adopts the result.
+    if (data === '\x07') {
+      void openExternalEditor()
+      return { consume: true }
+    }
     if (data === '\x04') {
       options.onExit()
       return { consume: true }
@@ -662,17 +712,10 @@ export function createTui(options: TuiOptions): TuiHandle {
     start(): void {
       transcript.addNote(`${S.bold('dsh')} · ${options.model} · session ${options.sessionId}`)
       tui.start()
-      if (timer === undefined) {
-        timer = setInterval(tick, SPIN_MS)
-        // The terminal's stdin handle keeps the process alive; the spinner must not.
-        timer.unref()
-      }
+      startSpinner()
     },
     async stop(): Promise<void> {
-      if (timer !== undefined) {
-        clearInterval(timer)
-        timer = undefined
-      }
+      stopSpinner()
       git?.dispose()
       // Drain pending stdin (e.g. Kitty key-release events) before restoring
       // raw mode so they don't leak to the parent shell over slow SSH.

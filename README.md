@@ -22,6 +22,7 @@ Keys:
 | `Alt+Up` | pull queued follow-ups back into the editor |
 | `Ctrl+O` | toggle full tool output (arguments and results) |
 | `Ctrl+X` | copy the last assistant message to the system clipboard |
+| `Ctrl+G` | open the current text in your external editor |
 | `Ctrl+D` | quit |
 | `/exit`, `/quit` | quit |
 | `/help` | show the command and key reference |
@@ -35,9 +36,11 @@ Tool approvals (the base profile's default `ask` policy) are answered in-termina
 
 `Ctrl+X` copies the last assistant message to the system clipboard using the OSC 52 escape sequence, so it works over SSH where no local clipboard is otherwise reachable; terminals without OSC 52 support simply ignore the sequence.
 
+`Ctrl+G` opens the current editor text in your external editor for composing longer messages: the TUI suspends (leaving raw mode), the editor runs on a temporary file seeded with the text, and the TUI resumes and adopts the result when the editor exits. The editor is `$VISUAL`, else `$EDITOR`, else `vi`; quitting without saving (or a non-zero exit) leaves the original text in place.
+
 Background activity that would otherwise be silent gets a transcript note: an automatic mid-turn compaction shows `⋯ compacting conversation…` and settles to `✓ compacted conversation` (or a red failure line), and each scheduled model retry logs one dim line such as `↻ retrying model call 1/3 in ~2s — 429 Too Many Requests`. Manual `/compact` reports through its own command result instead, and the notes replay on resume because they derive from durable session events.
 
-While a turn is running — including long tool calls — a braille spinner animates in the status line so the surface never looks frozen. The status line also shows context consumption (`used/window ctx`, e.g. `12.3k/164k ctx`) from the last model call's usage against the adapter-reported context window; without a reported window it shows used tokens alone. Once the session has spent tokens, a cumulative total follows (`Σ 45.2k`) — every model call's usage added up, distinct from the current context fill. Two session-wide rates follow once there is data to compute them: throughput (`128 t/s`) is output tokens over generation time (tool execution excluded, so it reflects model speed), and the cache hit rate (`66% cache`) is the share of prompt tokens served from cache — shown only once cache reads are actually observed. Its key hints follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^x copy · ^c/^d quit`), running shows `esc/^c cancel` plus `alt+↑ dequeue` while follow-ups are queued.
+While a turn is running — including long tool calls — a braille spinner animates in the status line so the surface never looks frozen. The status line also shows context consumption (`used/window ctx`, e.g. `12.3k/164k ctx`) from the last model call's usage against the adapter-reported context window; without a reported window it shows used tokens alone. Once the session has spent tokens, a cumulative total follows (`Σ 45.2k`) — every model call's usage added up, distinct from the current context fill. Two session-wide rates follow once there is data to compute them: throughput (`128 t/s`) is output tokens over generation time (tool execution excluded, so it reflects model speed), and the cache hit rate (`66% cache`) is the share of prompt tokens served from cache — shown only once cache reads are actually observed. Its key hints follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^x copy · ^g edit · ^c/^d quit`), running shows `esc/^c cancel` plus `alt+↑ dequeue` while follow-ups are queued.
 
 ## Install into a profile
 
