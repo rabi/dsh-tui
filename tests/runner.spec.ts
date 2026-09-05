@@ -540,6 +540,18 @@ describe('tui runner', () => {
             isError: false,
           }),
         }, { surfaceOp: 'append' })
+        // File mutations resolve at their result: valid ones fall back to the
+        // argument-parsed diff, malformed ones to the generic line.
+        for (const id of ['c5', 'c6', 'c7', 'c8', 'c9', 'c10', 'c11']) {
+          session.append('tool/result', {
+            turn: 1, step: 1,
+            message: createToolResultMessage({
+              callId: ToolCallId(id),
+              content: [{ type: 'text', text: 'applied' }],
+              isError: false,
+            }),
+          }, { surfaceOp: 'append' })
+        }
         session.append('step/end', { turn: 1, step: 1 })
         session.append('turn/end', {
           turn: 1,
@@ -579,6 +591,128 @@ describe('tui runner', () => {
     test.submit('/quit')
     expect(await running.code).toBe(0)
     expect(running.order).toEqual(['flush', 'exit'])
+    await test.ctx.fiber.dispose()
+  })
+
+  it('renders persisted diff metadata from tool results, with argument fallback and failure notes', async () => {
+    const badMetas: Array<[string, unknown]> = [
+      ['f', 'nope'],
+      ['g', null],
+      ['h', {}],
+      ['i', { diffs: [42] }],
+      ['k', { diffs: [null] }],
+      ['j', { diffs: [{ path: 'src/j.ts', oldText: 5, newText: 6 }] }],
+      ['l', { diffs: [{ path: 'src/l.ts', oldText: null, newText: 6 }] }],
+    ]
+    const test = await bench({
+      startup: { resumeSessionId: 'session-meta' },
+      resumeHistory(session) {
+        session.append('turn/start', { turn: 0 })
+        session.append('step/start', { turn: 0, step: 1 })
+        // Persisted meta wins over argument parsing; the title is the raw path.
+        session.append('tool/call', {
+          turn: 0, step: 1, callId: ToolCallId('m1'), name: 'edit',
+          arguments: JSON.stringify({ file_path: 'src/a.ts', old_string: 'arg old', new_string: 'arg new' }),
+        })
+        session.append('tool/result', {
+          turn: 0, step: 1,
+          message: createToolResultMessage({ callId: ToolCallId('m1'), content: [{ type: 'text', text: 'ok' }], isError: false }),
+          meta: { diffs: [
+            { path: 'src/a.ts', oldText: 'ctx\nmeta old', newText: 'ctx\nmeta new' },
+            { path: 'src/b.ts', oldText: null, newText: 'brand new' },
+          ] },
+        }, { surfaceOp: 'append' })
+        // An empty or malformed meta falls back to argument parsing.
+        session.append('tool/call', {
+          turn: 0, step: 1, callId: ToolCallId('m2'), name: 'write',
+          arguments: JSON.stringify({ file_path: 'src/c.ts', content: 'from args' }),
+        })
+        session.append('tool/result', {
+          turn: 0, step: 1,
+          message: createToolResultMessage({ callId: ToolCallId('m2'), content: [{ type: 'text', text: 'ok' }], isError: false }),
+          meta: { diffs: [] },
+        }, { surfaceOp: 'append' })
+        session.append('tool/call', {
+          turn: 0, step: 1, callId: ToolCallId('m3'), name: 'edit',
+          arguments: JSON.stringify({ file_path: 'src/d.ts', old_string: 'a', new_string: 'b' }),
+        })
+        session.append('tool/result', {
+          turn: 0, step: 1,
+          message: createToolResultMessage({ callId: ToolCallId('m3'), content: [{ type: 'text', text: 'ok' }], isError: false }),
+          meta: { diffs: [{ path: 42, oldText: null, newText: 'x' }] },
+        }, { surfaceOp: 'append' })
+        // A failed mutation renders no diff, only the generic note and error result.
+        session.append('tool/call', {
+          turn: 0, step: 1, callId: ToolCallId('m4'), name: 'edit',
+          arguments: JSON.stringify({ file_path: 'src/e.ts', old_string: 'gone', new_string: 'here' }),
+        })
+        session.append('tool/result', {
+          turn: 0, step: 1,
+          message: createToolResultMessage({ callId: ToolCallId('m4'), content: [{ type: 'text', text: 'not found' }], isError: true }),
+        }, { surfaceOp: 'append' })
+        // Every other malformed meta shape falls back to argument parsing too.
+        for (const [suffix, meta] of badMetas) {
+          session.append('tool/call', {
+            turn: 0, step: 1, callId: ToolCallId(`m${suffix}`), name: 'edit',
+            arguments: JSON.stringify({ file_path: `src/${suffix}.ts`, old_string: 'o', new_string: `n${suffix}` }),
+          })
+          session.append('tool/result', {
+            turn: 0, step: 1,
+            message: createToolResultMessage({ callId: ToolCallId(`m${suffix}`), content: [{ type: 'text', text: 'ok' }], isError: false }),
+            meta,
+          }, { surfaceOp: 'append' })
+        }
+        session.append('step/end', { turn: 0, step: 1 })
+        session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
+      },
+    })
+    const running = test.run()
+    await running.mounted
+    await waitFor(() => test.transcriptText().includes('⚙ src/a.ts'), 'the meta diff')
+
+    const transcript = test.transcriptText()
+    expect(transcript).toContain('⚙ src/a.ts')
+    expect(transcript).toContain('- meta old')
+    expect(transcript).toContain('+ meta new')
+    expect(transcript).toContain('⚙ src/b.ts')
+    expect(transcript).toContain('+ brand new')
+    expect(transcript).not.toContain('⚙ edit src/a.ts')
+    expect(transcript).not.toContain('arg old')
+    expect(transcript).toContain('⚙ write src/c.ts')
+    expect(transcript).toContain('+ from args')
+    expect(transcript).toContain('⚙ edit src/d.ts')
+    expect(transcript).toContain('+ b')
+    expect(transcript).toContain('⚙ edit({"file_path":"src/e.ts"')
+    expect(transcript).not.toContain('- gone')
+    for (const [suffix] of badMetas) expect(transcript).toContain(`+ n${suffix}`)
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('names file mutations whose results never land when the turn ends in error', async () => {
+    const test = await bench({
+      startup: { resumeSessionId: 'session-abort' },
+      resumeHistory(session) {
+        session.append('turn/start', { turn: 0 })
+        session.append('step/start', { turn: 0, step: 1 })
+        session.append('tool/call', {
+          turn: 0, step: 1, callId: ToolCallId('a1'), name: 'write',
+          arguments: JSON.stringify({ file_path: 'src/aborted.ts', content: 'never landed' }),
+        })
+        session.append('step/end', { turn: 0, step: 1 })
+        session.append('turn/end', { turn: 0, reason: { kind: 'error', error: { code: 'ABORTED', message: 'stopped' } } })
+      },
+    })
+    const running = test.run()
+    await running.mounted
+    await waitFor(() => test.transcriptText().includes('ABORTED: stopped'), 'the abort note')
+    const transcript = test.transcriptText()
+    expect(transcript).toContain('ABORTED: stopped')
+    expect(transcript).toContain('⚙ write({"file_path":"src/aborted.ts"')
+    expect(transcript).not.toContain('+ never landed')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
     await test.ctx.fiber.dispose()
   })
 

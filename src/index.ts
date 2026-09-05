@@ -298,6 +298,12 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
 
   // One event application shared by history replay and the live log.
   let draft: AssistantDraft | undefined
+  /**
+   * File-mutating calls awaiting their result. Their diff renders where the
+   * result lands (persisted diff metadata first, argument parsing as
+   * fallback); an aborted turn still names them on `turn/end`.
+   */
+  const pendingCalls = new Map<string, { name: 'edit' | 'write'; arguments: string }>()
   const applyModelChange = (next: ModelSelection): void => {
     tui.setModel(next.model)
     void refreshWindow(next)
@@ -329,20 +335,39 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
         return
       }
       case 'tool/call': {
-        const diff = diffOfToolCall(event.data.name, event.data.arguments)
-        if (diff !== undefined) tui.addDiff(diff.title, diff.removed, diff.added)
-        else tui.addToolCall(event.data.name, event.data.arguments)
+        const { callId, name, arguments: argumentsJson } = event.data
+        if (name === 'edit' || name === 'write') pendingCalls.set(callId, { name, arguments: argumentsJson })
+        else tui.addToolCall(name, argumentsJson)
         return
       }
       case 'tool/result': {
         const block = event.data.message.content[0]
-        tui.addToolResult(event.data.error !== undefined || block.isError === true, previewOf(block.content))
+        const isError = event.data.error !== undefined || block.isError === true
+        const pending = pendingCalls.get(block.toolCallId)
+        const diffs = diffsOfMeta(event.data.meta)
+        let rendered = false
+        if (diffs !== undefined) {
+          for (const diff of diffs) tui.addDiff(diff.path, diff.removed, diff.added)
+          rendered = true
+        } else if (!isError && pending !== undefined) {
+          const fallback = diffOfToolCall(pending.name, pending.arguments)
+          if (fallback !== undefined) {
+            tui.addDiff(fallback.title, fallback.removed, fallback.added)
+            rendered = true
+          }
+        }
+        if (pending !== undefined && !rendered) tui.addToolCall(pending.name, pending.arguments)
+        pendingCalls.delete(block.toolCallId)
+        tui.addToolResult(isError, previewOf(block.content))
         return
       }
       case 'turn/end':
         if (event.data.reason.kind === 'error') {
           tui.addError(`${event.data.reason.error.code}: ${event.data.reason.error.message}`)
+          // Calls whose results never landed still get their one-line note.
+          for (const pending of pendingCalls.values()) tui.addToolCall(pending.name, pending.arguments)
         }
+        pendingCalls.clear()
         return
       case 'command/done': {
         const { kind, text } = event.data
@@ -404,13 +429,34 @@ function splitAssistant(content: readonly ContentBlock[]): { text: string; reaso
   return { text, reasoning }
 }
 
+/**
+ * The persisted diff hunks a tool result carries, when they do. `meta` is
+ * tool-private and crosses the durable-log boundary, so every field is
+ * validated here; any miss falls back to argument parsing.
+ */
+function diffsOfMeta(meta: unknown): { path: string; removed: string | null; added: string }[] | undefined {
+  if (typeof meta !== 'object' || meta === null) return undefined
+  const diffs = (meta as Record<string, unknown>).diffs
+  if (!Array.isArray(diffs) || diffs.length === 0) return undefined
+  const out: { path: string; removed: string | null; added: string }[] = []
+  for (const hunk of diffs) {
+    if (typeof hunk !== 'object' || hunk === null) return undefined
+    const { path, oldText, newText } = hunk as Record<string, unknown>
+    if (typeof path !== 'string') return undefined
+    if (oldText !== null && typeof oldText !== 'string') return undefined
+    if (typeof newText !== 'string') return undefined
+    out.push({ path, removed: oldText, added: newText })
+  }
+  return out
+}
+
 /** One-line dim preview of a tool result's text content. */
 /**
  * The file change one tool call's arguments describe, when they do. The
  * arguments are model-produced JSON, so every field is validated at this
  * wire boundary; any miss falls back to the generic one-line tool render.
  */
-function diffOfToolCall(name: string, argumentsJson: string): { title: string; removed: string | null; added: string } | undefined {
+function diffOfToolCall(name: 'edit' | 'write', argumentsJson: string): { title: string; removed: string | null; added: string } | undefined {
   let args: unknown
   try {
     args = JSON.parse(argumentsJson)
@@ -427,12 +473,9 @@ function diffOfToolCall(name: string, argumentsJson: string): { title: string; r
     if (typeof removed !== 'string' || typeof added !== 'string') return undefined
     return { title: `edit ${path}`, removed, added }
   }
-  if (name === 'write') {
-    const added = record.content
-    if (typeof added !== 'string') return undefined
-    return { title: `write ${path}`, removed: null, added }
-  }
-  return undefined
+  const added = record.content
+  if (typeof added !== 'string') return undefined
+  return { title: `write ${path}`, removed: null, added }
 }
 
 function previewOf(content: readonly ContentBlock[]): string {
