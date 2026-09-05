@@ -158,6 +158,22 @@ describe('Transcript', () => {
     draft.textDelta('new')
     expect(t.render(60)).not.toBe(first)
   })
+
+  it('updates a note in place, dim by default and red when failed', () => {
+    const t = new Transcript()
+    const note = t.beginNote('⋯ compacting conversation…')
+    expect(stripAnsi(at(t.render(80), 0))).toBe(' ⋯ compacting conversation…')
+    // The initial line is dim.
+    expect(at(t.render(80), 0)).toContain('\x1b[2m')
+    note.set('✓ compacted conversation')
+    expect(stripAnsi(at(t.render(80), 0))).toBe(' ✓ compacted conversation')
+    expect(at(t.render(80), 0)).toContain('\x1b[2m')
+    note.set('✗ compaction failed: boom', true)
+    expect(stripAnsi(at(t.render(80), 0))).toBe(' ✗ compaction failed: boom')
+    // The failed line is red, not dim.
+    expect(at(t.render(80), 0)).toContain('\x1b[31m')
+    expect(at(t.render(80), 0)).not.toContain('\x1b[2m')
+  })
 })
 
 interface GateHarness {

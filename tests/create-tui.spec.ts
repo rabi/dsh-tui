@@ -374,6 +374,15 @@ describe('createTui', () => {
     test.status.invalidate()
   })
 
+  it('exposes beginNote on the handle, updating the transcript in place', () => {
+    const test = mount()
+    const note = test.handle.beginNote('⋯ compacting conversation…')
+    expect(stripAnsi(test.transcript.render(80).join('\n'))).toContain('⋯ compacting conversation…')
+    note.set('✓ compacted conversation')
+    expect(stripAnsi(test.transcript.render(80).join('\n'))).toContain('✓ compacted conversation')
+    expect(stripAnsi(test.transcript.render(80).join('\n'))).not.toContain('compacting')
+  })
+
   it('clears every committed item for /clear', () => {
     const test = mount()
     test.handle.addUser('do the thing')

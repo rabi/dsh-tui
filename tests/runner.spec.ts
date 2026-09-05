@@ -612,6 +612,47 @@ describe('tui runner', () => {
     await test.ctx.fiber.dispose()
   })
 
+  it('notes automatic compaction and scheduled model retries from the log', async () => {
+    const test = await bench({
+      startup: { resumeSessionId: 'session-notes' },
+      resumeHistory(session) {
+        // Automatic compaction bracket: opens, then resolves successfully.
+        session.append('compaction/start', { compactionId: 'c1', turn: 1 })
+        session.append('compaction/end', { compactionId: 'c1', turn: 1 })
+        // A failed automatic compaction renders red with its error.
+        session.append('compaction/start', { compactionId: 'c2', turn: 2 })
+        session.append('compaction/end', { compactionId: 'c2', turn: 2, error: 'summary failed' })
+        // A manual /compact bracket stays silent (its command/done note reports).
+        session.append('compaction/start', { compactionId: 'c3', sourceCommandId: 'cmd1', turn: null })
+        session.append('compaction/end', { compactionId: 'c3', sourceCommandId: 'cmd1', turn: null, error: 'boom' })
+        // A stray end without an open start is ignored.
+        session.append('compaction/end', { compactionId: 'c4', turn: 3 })
+        // Scheduled retries: bounded and unbounded, long and short waits.
+        session.append('llm/retry', {
+          retryId: 'r1', turn: 1, step: 1, provider: 'test-provider', mode: 'normal',
+          policyKey: 'default', retry: 1, maxRetries: 3, delayMs: 2000,
+          failure: { message: '429 Too Many Requests', code: 'rate-limited' },
+        })
+        session.append('llm/retry', {
+          retryId: 'r2', turn: 1, step: 2, provider: 'test-provider', mode: 'always',
+          policyKey: 'default', retry: 2, delayMs: 500,
+          failure: { message: '', code: 'overloaded' },
+        })
+      },
+    })
+    const running = test.run()
+    await running.mounted
+    const transcript = test.transcriptText()
+    expect(transcript).toContain('✓ compacted conversation')
+    expect(transcript).toContain('✗ compaction failed: summary failed')
+    expect(transcript).not.toContain('boom')
+    expect(transcript).toContain('↻ retrying model call 1/3 in ~2s — 429 Too Many Requests')
+    expect(transcript).toContain('↻ retrying model call 2 in 500ms — overloaded')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
   it('renders persisted diff metadata from tool results, with argument fallback and failure notes', async () => {
     const badMetas: Array<[string, unknown]> = [
       ['f', 'nope'],

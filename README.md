@@ -32,6 +32,8 @@ Typing `/` at the start of a message offers slash-command completion — the TUI
 
 Tool approvals (the base profile's default `ask` policy) are answered in-terminal with a `y`/`n` prompt; cancelling the turn cancels the pending request.
 
+Background activity that would otherwise be silent gets a transcript note: an automatic mid-turn compaction shows `⋯ compacting conversation…` and settles to `✓ compacted conversation` (or a red failure line), and each scheduled model retry logs one dim line such as `↻ retrying model call 1/3 in ~2s — 429 Too Many Requests`. Manual `/compact` reports through its own command result instead, and the notes replay on resume because they derive from durable session events.
+
 While a turn is running — including long tool calls — a braille spinner animates in the status line so the surface never looks frozen. The status line also shows context consumption (`used/window ctx`, e.g. `12.3k/164k ctx`) from the last model call's usage against the adapter-reported context window; without a reported window it shows used tokens alone. Its key hints follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^c/^d quit`), running shows `esc/^c cancel` plus `alt+↑ dequeue` while follow-ups are queued.
 
 ## Install into a profile

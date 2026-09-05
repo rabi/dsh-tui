@@ -112,6 +112,12 @@ function cachedItem(renderFn: (width: number) => string[]): Item {
   }
 }
 
+/** A dim transcript note whose text updates in place (activity brackets). */
+export interface NoteDraft {
+  /** Replace the note's text; `failed` renders it red instead of dim. */
+  set(text: string, failed?: boolean): void
+}
+
 /** A live assistant message being streamed into the transcript. */
 export interface AssistantDraft {
   /** Append one streamed text delta. */
@@ -260,6 +266,26 @@ export class Transcript implements Component {
   /** Render one dim informational note (header, separators). */
   addNote(text: string): void {
     this.push(cachedItem(width => pad([S.dim(truncateToWidth(text, width - PADX * 2, '…', false))])))
+  }
+
+  /** Start one dim note whose text updates in place; returns the updater. */
+  beginNote(initial: string): NoteDraft {
+    let text = initial
+    let failed = false
+    const change = (): void => { this.change() }
+    const item = cachedItem(width => pad([
+      truncateToWidth(failed ? S.red(text) : S.dim(text), width - PADX * 2, '…', false),
+    ]))
+    this.items.push(item)
+    change()
+    return {
+      set(next: string, isFailed = false): void {
+        text = next
+        failed = isFailed
+        item.invalidate()
+        change()
+      },
+    }
   }
 
   /** Render one red error line. */
@@ -424,6 +450,8 @@ export interface TuiHandle {
   addToolCall(name: string, args: string): void
   addToolResult(isError: boolean, preview: string): void
   addNote(text: string): void
+  /** Start one dim note whose text updates in place; returns the updater. */
+  beginNote(text: string): NoteDraft
   addError(text: string): void
   /** Remove every committed transcript item (the `/clear` command). */
   clearTranscript(): void
@@ -610,6 +638,7 @@ export function createTui(options: TuiOptions): TuiHandle {
     addToolCall: (name: string, args: string): void => { transcript.addToolCall(name, args) },
     addToolResult: (isError: boolean, preview: string): void => { transcript.addToolResult(isError, preview) },
     addNote: (text: string): void => { transcript.addNote(text) },
+    beginNote: (text: string): NoteDraft => transcript.beginNote(text),
     addError: (text: string): void => { transcript.addError(text) },
     clearTranscript: (): void => { transcript.clear() },
     setModel: (model: string): void => {

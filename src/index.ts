@@ -28,15 +28,33 @@ import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-commands'
-import { createTui, type AssistantDraft } from './tui.ts'
+import { createTui, type AssistantDraft, type NoteDraft } from './tui.ts'
 import type { TuiStartupValues } from './startup.ts'
 
-// The session-controller package owns this event; re-declare the member so this
-// surface can append and read it without pulling the API layer's type graph in.
+// The session-controller, dsh-compaction, and dsh-llm-retry packages own these
+// events; re-declare the members so this surface can read them without pulling
+// those packages' type graphs in.
 declare module '@deepseek-ai/dsh-session' {
   interface SessionEventMap {
     /** The model route selected for subsequent requests (the `/model` command). */
     'model/selection': ModelSelection
+    /** Compaction bracket opened before summarization. */
+    'compaction/start': { compactionId: string; sourceCommandId?: string; turn: number | null }
+    /** Compaction bracket closed; `error` records an unsuccessful attempt. */
+    'compaction/end': { compactionId: string; sourceCommandId?: string; turn: number | null; error?: string }
+    /** One provider-routed model-request retry scheduled after a failed attempt. */
+    'llm/retry': {
+      retryId: string
+      turn: number
+      step: number
+      provider: string
+      mode: 'normal' | 'always'
+      policyKey: string
+      retry: number
+      maxRetries?: number
+      delayMs: number
+      failure: { message: string; code: string; status?: number }
+    }
   }
 }
 
@@ -357,6 +375,8 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
    * fallback); an aborted turn still names them on `turn/end`.
    */
   const pendingCalls = new Map<string, { name: 'edit' | 'write'; arguments: string }>()
+  /** Open automatic-compaction note, resolved by its `compaction/end`. */
+  let compactionNote: NoteDraft | undefined
   const applyModelChange = (next: ModelSelection): void => {
     tui.setModel(next.model)
     void refreshWindow(next)
@@ -424,6 +444,32 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
         }
         pendingCalls.clear()
         return
+      case 'compaction/start':
+        // Manual /compact reports through its command/done note; only the
+        // automatic mid-turn compaction needs its own transcript line.
+        if (event.data.sourceCommandId === undefined) {
+          compactionNote = tui.beginNote('⋯ compacting conversation…')
+        }
+        return
+      case 'compaction/end': {
+        const note = compactionNote
+        compactionNote = undefined
+        if (note === undefined) return
+        const error = event.data.error
+        note.set(
+          error !== undefined ? `✗ compaction failed: ${error}` : '✓ compacted conversation',
+          error !== undefined,
+        )
+        return
+      }
+      case 'llm/retry': {
+        const { retry, maxRetries, delayMs, failure } = event.data
+        const count = maxRetries === undefined ? String(retry) : `${String(retry)}/${String(maxRetries)}`
+        const wait = delayMs >= 1000 ? `~${String(Math.round(delayMs / 1000))}s` : `${String(delayMs)}ms`
+        const reason = failure.message !== '' ? failure.message : failure.code
+        tui.addNote(`↻ retrying model call ${count} in ${wait} — ${reason}`)
+        return
+      }
       case 'command/done': {
         const { kind, text } = event.data
         // Notes are single-line, so a multi-line result renders one note per line.
