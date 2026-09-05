@@ -482,6 +482,7 @@ export function createTui(options: TuiOptions): TuiHandle {
   const approvalLine = new StatusLine(() => approvalText)
   let spin = 0
   let spinning = false
+  const queueTexts = (): string[] => options.queue?.() ?? []
   const status = new StatusLine(() => {
     const running = options.isRunning()
     const prefix = running ? `${SPINNER.charAt(spin)} ` : ''
@@ -490,7 +491,12 @@ export function createTui(options: TuiOptions): TuiHandle {
       ? formatTokens(usage.used)
       : `${formatTokens(usage.used)}/${formatTokens(usage.window)}`
     const branch = git?.branch()
-    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ⏎ send · ^o tools · esc/^c cancel · ^c quit · /exit`
+    // Hints follow the state: while a turn runs, cancelling (and pulling
+    // queued follow-ups back) is what matters; idle, the input shortcuts.
+    const hints = running
+      ? ['esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
+      : ['⏎ send', 'tab complete', '^o tools', '^c/^d quit']
+    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ${hints.join(' · ')}`
   })
   let timer: ReturnType<typeof setInterval> | undefined
   /** Advance the frame and repaint while a turn runs; settle the line when it ends. */
@@ -515,7 +521,6 @@ export function createTui(options: TuiOptions): TuiHandle {
     editor.addToHistory(text)
     options.onSubmit(text)
   }
-  const queueTexts = (): string[] => options.queue?.() ?? []
   const queueLine = new QueueLine(queueTexts)
   tui.addChild(transcript)
   tui.addChild(approvalLine)

@@ -170,6 +170,25 @@ describe('createTui', () => {
     }
   })
 
+  it('shows state-dependent key hints in the status line', () => {
+    const test = mount()
+    const line = (): string => stripAnsi(test.status.render(200)[0] ?? '')
+    // Idle: the input shortcuts.
+    expect(line()).toContain('⏎ send')
+    expect(line()).toContain('tab complete')
+    expect(line()).toContain('^c/^d quit')
+    expect(line()).not.toContain('esc/^c cancel')
+    test.setRunning(true)
+    // Running: cancelling leads; no queue yet, so no dequeue hint.
+    expect(line()).toContain('esc/^c cancel')
+    expect(line()).not.toContain('alt+↑ dequeue')
+    expect(line()).not.toContain('⏎ send')
+    test.setQueue(['queued one'])
+    expect(line()).toContain('alt+↑ dequeue')
+    test.setRunning(false)
+    expect(line()).toContain('⏎ send')
+  })
+
   it('submits non-empty editor text to the runner and records history', () => {
     const test = mount()
     const submit = test.editor.onSubmit
