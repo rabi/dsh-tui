@@ -140,6 +140,8 @@ export class Transcript implements Component {
   private lastLines: string[] = []
   /** Whether tool calls/results render their full text (Ctrl+O). */
   private toolsExpanded = false
+  /** Raw markdown of the most recent assistant message, for Ctrl+X copy. */
+  private lastAssistantText = ''
 
   constructor(onChange?: () => void) {
     this.onChange = onChange ?? (() => {})
@@ -158,6 +160,11 @@ export class Transcript implements Component {
     this.change()
   }
 
+  /** Raw markdown of the last assistant message, or '' if none yet. */
+  lastAssistant(): string {
+    return this.lastAssistantText
+  }
+
   /** Render one committed user prompt. */
   addUser(text: string): void {
     this.push(cachedItem(width => pad(wrapTextWithAnsi(`${S.cyan('❯')} ${text}`, width - PADX * 2))))
@@ -166,6 +173,7 @@ export class Transcript implements Component {
   /** Render one committed assistant message (reasoning first, then text). */
   addAssistant(text: string, reasoning: string): void {
     if (text === '' && reasoning === '') return
+    this.lastAssistantText = text
     const md = new Markdown(text, PADX, 0, MD_THEME)
     const item = cachedItem(width => [
       ...pad(wrapTextWithAnsi(S.dim(S.italic(reasoning)), width - PADX * 2)).filter(l => l.trim() !== ''),
@@ -181,6 +189,7 @@ export class Transcript implements Component {
     let text = ''
     let reasoning = ''
     const change = (): void => { this.change() }
+    const record = (t: string): void => { this.lastAssistantText = t }
     const item = cachedItem((width) => {
       if (text === '' && reasoning === '') return []
       return [
@@ -207,6 +216,7 @@ export class Transcript implements Component {
         reasoning = finalReasoning
         md.setText(text)
         item.invalidate()
+        record(finalText)
         change()
       },
     }
@@ -484,6 +494,16 @@ function formatTokens(count: number): string {
 }
 
 /**
+ * Encode text as an OSC 52 clipboard-set sequence. Terminals that support it
+ * (iTerm2, Kitty, WezTerm, Windows Terminal, …) apply it to the system
+ * clipboard, so copying works over SSH where no local clipboard is reachable.
+ */
+function osc52Copy(text: string): string {
+  const b64 = Buffer.from(text, 'utf8').toString('base64')
+  return `\x1b]52;c${b64}\x07`
+}
+
+/**
  * An autocomplete provider that always sees the current command list: each
  * request delegates to one combined provider built from the latest commands,
  * so registry changes need no re-wiring. File-path completion shares the
@@ -528,7 +548,7 @@ export function createTui(options: TuiOptions): TuiHandle {
     // queued follow-ups back) is what matters; idle, the input shortcuts.
     const hints = running
       ? ['esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
-      : ['⏎ send', 'tab complete', '^o tools', '^c/^d quit']
+      : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^c/^d quit']
     return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText} · ${hints.join(' · ')}`
   })
   let timer: ReturnType<typeof setInterval> | undefined
@@ -610,6 +630,13 @@ export function createTui(options: TuiOptions): TuiHandle {
     // Ctrl+O toggles full tool output (pi's app.tools.expand).
     if (data === '\x0f') {
       transcript.toggleToolsExpanded()
+      return { consume: true }
+    }
+    // Ctrl+X copies the last assistant message to the system clipboard via
+    // OSC 52; a no-op (but still consumed) when there is nothing to copy.
+    if (data === '\x18') {
+      const text = transcript.lastAssistant()
+      if (text !== '') tui.terminal.write(osc52Copy(text))
       return { consume: true }
     }
     if (data === '\x04') {

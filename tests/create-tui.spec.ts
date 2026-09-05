@@ -31,9 +31,10 @@ vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
       stopped = false
       children: Component[] = []
       listeners: Array<(data: string) => { consume?: boolean } | undefined> = []
-      terminal: { drainInput(maxMs?: number, idleMs?: number): Promise<void>; stop(): void } = {
+      terminal: { drainInput(maxMs?: number, idleMs?: number): Promise<void>; stop(): void; write(data: string): void } = {
         drainInput: () => Promise.resolve(),
         stop: () => {},
+        write: () => {},
       }
       constructor() {
         captured.screens.push(this)
@@ -189,6 +190,7 @@ describe('createTui', () => {
     // Idle: the input shortcuts.
     expect(line()).toContain('⏎ send')
     expect(line()).toContain('tab complete')
+    expect(line()).toContain('^x copy')
     expect(line()).toContain('^c/^d quit')
     expect(line()).not.toContain('esc/^c cancel')
     test.setRunning(true)
@@ -240,6 +242,31 @@ describe('createTui', () => {
     expect(expanded).not.toBe(collapsed)
     expect(key('\x0f')).toEqual({ consume: true })
     expect(stripAnsi(test.transcript.render(80).join('\n'))).toBe(collapsed)
+  })
+
+  it('copies the last assistant message to the clipboard on Ctrl+X (OSC 52)', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    const writeSpy = vi.spyOn(test.screen.terminal, 'write')
+
+    // No assistant message yet: consumed but nothing written.
+    expect(key('\x18')).toEqual({ consume: true })
+    expect(writeSpy).not.toHaveBeenCalled()
+
+    // A committed message is copied as base64 in an OSC 52 clipboard sequence.
+    test.handle.addAssistant('hello world', '')
+    expect(key('\x18')).toEqual({ consume: true })
+    const expected = `\x1b]52;c${Buffer.from('hello world', 'utf8').toString('base64')}\x07`
+    expect(writeSpy).toHaveBeenLastCalledWith(expected)
+
+    // A streamed message that finishes becomes the new "last" message.
+    const draft = test.handle.beginAssistant()
+    draft.textDelta('str')
+    draft.finish('streamed answer', '')
+    expect(key('\x18')).toEqual({ consume: true })
+    const streamed = `\x1b]52;c${Buffer.from('streamed answer', 'utf8').toString('base64')}\x07`
+    expect(writeSpy).toHaveBeenLastCalledWith(streamed)
   })
 
   it('routes Escape to cancel while running and passes it through idle', () => {

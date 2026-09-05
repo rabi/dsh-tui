@@ -39,9 +39,10 @@ vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
     },
     TuiMainScreen: class {
       children: unknown[] = []
-      terminal: { drainInput(maxMs?: number, idleMs?: number): Promise<void>; stop(): void } = {
+      terminal: { drainInput(maxMs?: number, idleMs?: number): Promise<void>; stop(): void; write(data: string): void } = {
         drainInput: () => Promise.resolve(),
         stop: () => {},
+        write: () => {},
       }
       constructor() {
         captured.screens.push(this)
