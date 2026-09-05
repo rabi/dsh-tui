@@ -440,8 +440,8 @@ export interface TuiOptions {
 export interface TuiHandle {
   /** Take over the terminal (raw mode) and paint the header. */
   start(): void
-  /** Restore the terminal. */
-  stop(): void
+  /** Restore the terminal (drains pending input first to prevent escape-seq leak). */
+  stop(): Promise<void>
   addUser(text: string): void
   addAssistant(text: string, reasoning: string): void
   beginAssistant(): AssistantDraft
@@ -628,12 +628,15 @@ export function createTui(options: TuiOptions): TuiHandle {
         timer.unref()
       }
     },
-    stop(): void {
+    async stop(): Promise<void> {
       if (timer !== undefined) {
         clearInterval(timer)
         timer = undefined
       }
       git?.dispose()
+      // Drain pending stdin (e.g. Kitty key-release events) before restoring
+      // raw mode so they don't leak to the parent shell over slow SSH.
+      await tui.terminal.drainInput(1000)
       tui.stop()
     },
     addUser: (text: string): void => { transcript.addUser(text) },

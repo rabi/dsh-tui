@@ -24,12 +24,17 @@ vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
     ProcessTerminal: class {
       start(): void {}
       stop(): void {}
+      drainInput(_maxMs?: number, _idleMs?: number): Promise<void> { return Promise.resolve() }
     },
     TuiMainScreen: class {
       started = false
       stopped = false
       children: Component[] = []
       listeners: Array<(data: string) => { consume?: boolean } | undefined> = []
+      terminal: { drainInput(maxMs?: number, idleMs?: number): Promise<void>; stop(): void } = {
+        drainInput: () => Promise.resolve(),
+        stop: () => {},
+      }
       constructor() {
         captured.screens.push(this)
       }
@@ -129,7 +134,7 @@ function mount(options?: Partial<Parameters<typeof createTui>[0]>) {
 }
 
 describe('createTui', () => {
-  it('paints the header note and a status line that tracks the running state', () => {
+  it('paints the header note and a status line that tracks the running state', async () => {
     const test = mount()
     test.handle.start()
     expect(test.screen.started).toBe(true)
@@ -140,11 +145,19 @@ describe('createTui', () => {
     expect(stripAnsi(test.status.render(80)[0] ?? '')).toContain('idle')
     test.setRunning(true)
     expect(stripAnsi(test.status.render(80)[0] ?? '')).toContain('running')
-    test.handle.stop()
+    await test.handle.stop()
     expect(test.screen.stopped).toBe(true)
   })
 
-  it('spins the status line while a turn runs and settles when it ends', () => {
+  it('drains pending input (1000 ms) before stopping the terminal', async () => {
+    const test = mount()
+    const drainSpy = vi.spyOn(test.screen.terminal, 'drainInput')
+    await test.handle.stop()
+    expect(drainSpy).toHaveBeenCalledWith(1000)
+    expect(test.screen.stopped).toBe(true)
+  })
+
+  it('spins the status line while a turn runs and settles when it ends', async () => {
     vi.useFakeTimers()
     try {
       const test = mount()
@@ -163,8 +176,8 @@ describe('createTui', () => {
       vi.advanceTimersByTime(100)
       // Repeated start/stop are no-ops once the timer is owned or cleared.
       test.handle.start()
-      test.handle.stop()
-      test.handle.stop()
+      await test.handle.stop()
+      await test.handle.stop()
     } finally {
       vi.useRealTimers()
     }
@@ -313,7 +326,7 @@ describe('createTui', () => {
     expect(stripAnsi(lines[0] ?? '')).toContain('⏳ real one')
   })
 
-  it('mounts without a queue service and lets Alt+Up pass through', () => {
+  it('mounts without a queue service and lets Alt+Up pass through', async () => {
     const handle = createTui({
       model: 'test-model',
       sessionId: 'session-test',
@@ -331,7 +344,7 @@ describe('createTui', () => {
     const queueLine = screen.children[2]
     if (queueLine === undefined) throw new Error('missing queue line')
     expect(queueLine.render(80)).toEqual([])
-    handle.stop()
+    await handle.stop()
   })
 
   it('renders every transcript item kind, caches same-width frames, and re-wraps on resize', () => {
@@ -452,7 +465,7 @@ describe('createTui', () => {
       const dir = await makeRepo('ref: refs/heads/feature/x\n')
       const test = mount({ gitCwd: dir })
       expect(stripAnsi(test.status.render(200)[0] ?? '')).toContain('test-model ⎇ feature/x ·')
-      test.handle.stop()
+      await test.handle.stop()
     })
 
     it('shows a short SHA for a detached HEAD', async () => {
@@ -460,7 +473,7 @@ describe('createTui', () => {
       const dir = await makeRepo(`${sha}\n`)
       const test = mount({ gitCwd: dir })
       expect(stripAnsi(test.status.render(200)[0] ?? '')).toContain(`⎇ ${sha.slice(0, 7)}`)
-      test.handle.stop()
+      await test.handle.stop()
     })
   })
 
@@ -472,8 +485,8 @@ describe('createTui', () => {
     const provider = wired.editor.providers[0] as AutocompleteProvider
     const suggestions = await provider.getSuggestions(['/'], 0, 1, { signal: new AbortController().signal })
     expect(suggestions?.items.map(item => item.value)).toEqual(['help'])
-    plain.handle.stop()
-    wired.handle.stop()
+    await plain.handle.stop()
+    await wired.handle.stop()
   })
 })
 

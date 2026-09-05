@@ -234,7 +234,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       agent.cancel({ kind: 'user' })
       disposeEvents()
       disposeApproval()
-      tui.stop()
+      await tui.stop()
       await sessions.flush(agent.session)
       await handle.dispose()
     } catch (error) {
