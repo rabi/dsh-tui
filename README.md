@@ -23,24 +23,43 @@ Keys:
 | `Ctrl+O` | toggle full tool output (arguments and results) |
 | `Ctrl+X` | copy the last assistant message to the system clipboard |
 | `Ctrl+G` | open the current text in your external editor |
+| `Shift+Tab` | cycle the thinking level (when the model offers levels) |
+| `Ctrl+T` | toggle reasoning on/off (default level ↔ off) |
 | `Ctrl+D` | quit |
 | `/exit`, `/quit` | quit |
 | `/help` | show the command and key reference |
 | `/clear` | clear the transcript |
 
+## Behavior
+
+### Follow-up queue
 Prompts sent while a turn is running queue as follow-up turns and render as dim `⏳` lines above the editor. Cancelling the turn (or `Alt+Up`) pulls the queued texts back into the editor for re-editing.
 
+### Slash-command completion
 Typing `/` at the start of a message offers slash-command completion — the TUI's own shortcuts, commands registered by the profile, and user-invocable skills — with `Tab` completing the highlighted entry; file paths complete from the working directory. The roster tracks registry changes live, so commands added or removed at runtime appear in the dropdown without a restart.
 
+### Tool approvals
 Tool approvals (the base profile's default `ask` policy) are answered in-terminal with a `y`/`n` prompt; cancelling the turn cancels the pending request.
 
+### Clipboard
 `Ctrl+X` copies the last assistant message to the system clipboard using the OSC 52 escape sequence, so it works over SSH where no local clipboard is otherwise reachable; terminals without OSC 52 support simply ignore the sequence.
 
+### External editor
 `Ctrl+G` opens the current editor text in your external editor for composing longer messages: the TUI suspends (leaving raw mode), the editor runs on a temporary file seeded with the text, and the TUI resumes and adopts the result when the editor exits. The editor is `$VISUAL`, else `$EDITOR`, else `vi`; quitting without saving (or a non-zero exit) leaves the original text in place.
 
+### Background notes
 Background activity that would otherwise be silent gets a transcript note: an automatic mid-turn compaction shows `⋯ compacting conversation…` and settles to `✓ compacted conversation` (or a red failure line), and each scheduled model retry logs one dim line such as `↻ retrying model call 1/3 in ~2s — 429 Too Many Requests`. Manual `/compact` reports through its own command result instead, and the notes replay on resume because they derive from durable session events.
 
-While a turn is running — including long tool calls — a braille spinner animates in the status line so the surface never looks frozen. The status line also shows context consumption (`used/window ctx`, e.g. `12.3k/164k ctx`) from the last model call's usage against the adapter-reported context window; without a reported window it shows used tokens alone. Once the session has spent tokens, a cumulative total follows (`Σ 45.2k`) — every model call's usage added up, distinct from the current context fill. Two session-wide rates follow once there is data to compute them: throughput (`128 t/s`) is output tokens over generation time (tool execution excluded, so it reflects model speed), and the cache hit rate (`66% cache`) is the share of prompt tokens served from cache — shown only once cache reads are actually observed. Its key hints follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^x copy · ^g edit · ^c/^d quit`), running shows `esc/^c cancel` plus `alt+↑ dequeue` while follow-ups are queued.
+### Status line
+A braille spinner animates while a turn runs — including long tool calls — so the surface never looks frozen. Left to right, the line shows:
+
+- **Model** — the selected model, with the active thinking level in parentheses while one is set (`test-model (High)`); off shows the bare name. A git branch follows when present (`⎇ main`).
+- **State** — `running` or `idle`.
+- **Context** — consumption from the last model call against the adapter-reported window (`12.3k/164k ctx`); used tokens alone when no window is reported.
+- **Total** — cumulative tokens spent this session (`Σ 45.2k`), distinct from the current context fill; shown once tokens are spent.
+- **Throughput** — the last call's output tokens over its generation time (`128 t/s`); tool execution excluded, so it tracks current model speed. Shown once a call has completed.
+- **Cache** — share of prompt tokens served from cache (`66% cache`); shown only once cache reads are observed.
+- **Key hints** — follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^x copy · ^g edit · ^t/shift+tab think · ^c/^d quit`, the thinking hint only when the model offers levels), running shows `esc/^c cancel` plus `alt+↑ dequeue` while follow-ups are queued.
 
 ## Install into a profile
 
@@ -87,6 +106,6 @@ No invariant companion is published because the bundle holds no mutable state of
 
 ## Limitations
 
-- Single agent per process; no model switching mid-session.
+- Single agent per process.
 - Resumed sessions replay the full committed log (including pre-compaction history) into the transcript.
 - Fixed ANSI palette; no theme configuration.
