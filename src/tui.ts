@@ -473,6 +473,8 @@ export interface ContextUsage {
   used: number
   /** The model's context window, when the adapter reports one. */
   window?: number
+  /** Cumulative tokens across every model call this session (shown when > 0). */
+  total?: number
 }
 
 /** Compact token count for the status line (1234 -> 1.2k). */
@@ -518,13 +520,16 @@ export function createTui(options: TuiOptions): TuiHandle {
     const ctxText = usage.window === undefined
       ? formatTokens(usage.used)
       : `${formatTokens(usage.used)}/${formatTokens(usage.window)}`
+    // The session total is cumulative consumption, distinct from the current
+    // context fill; it appears only once the session has spent tokens.
+    const totalText = usage.total !== undefined && usage.total > 0 ? ` · Σ ${formatTokens(usage.total)}` : ''
     const branch = git?.branch()
     // Hints follow the state: while a turn runs, cancelling (and pulling
     // queued follow-ups back) is what matters; idle, the input shortcuts.
     const hints = running
       ? ['esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
       : ['⏎ send', 'tab complete', '^o tools', '^c/^d quit']
-    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ${hints.join(' · ')}`
+    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText} · ${hints.join(' · ')}`
   })
   let timer: ReturnType<typeof setInterval> | undefined
   /** Advance the frame and repaint while a turn runs; settle the line when it ends. */

@@ -406,6 +406,17 @@ describe('createTui', () => {
     expect(stripAnsi(noWindow.status.render(200)[0] ?? '')).toContain('12.3k ctx')
   })
 
+  it('shows the session token total only once tokens have been spent', () => {
+    const line = (test: ReturnType<typeof mount>): string => stripAnsi(test.status.render(200)[0] ?? '')
+    // No total reported, or zero: no Σ segment.
+    expect(line(mount())).not.toContain('Σ')
+    expect(line(mount({ context: () => ({ used: 500, window: 164_000, total: 0 }) }))).not.toContain('Σ')
+    // Non-zero total renders after the ctx segment.
+    const withTotal = mount({ context: () => ({ used: 12_345, window: 164_000, total: 45_200 }) })
+    const text = line(withTotal)
+    expect(text).toContain('12.3k/164k ctx · Σ 45.2k')
+  })
+
   it('asks approval through the mounted gate and settles once on double answer', async () => {
     const test = mount()
     const promise = test.handle.askApproval('run bash')

@@ -653,6 +653,42 @@ describe('tui runner', () => {
     await test.ctx.fiber.dispose()
   })
 
+  it('accumulates the session token total across model calls in the status line', async () => {
+    const test = await bench({
+      startup: { resumeSessionId: 'session-tokens' },
+      resumeHistory(session) {
+        // Two calls with distinct usage; the total is their sum, not the last.
+        for (const [turn, input, output] of [[0, 1000, 500], [1, 2000, 1000]] as const) {
+          session.append('turn/start', { turn })
+          session.append('step/start', { turn, step: 1 })
+          session.append('user/message', userMsg(`question ${String(turn)}`), { surfaceOp: 'append' })
+          session.append('assistant/message', {
+            turn,
+            step: 1,
+            usage: { inputTokens: input, outputTokens: output },
+            message: createAssistantMessage({
+              content: [{ type: 'text', text: `answer ${String(turn)}` }],
+              source: { provider: 'test-provider', model: 'test-model' },
+            }),
+          }, { surfaceOp: 'append' })
+          session.append('step/end', { turn, step: 1 })
+          session.append('turn/end', { turn, reason: { kind: 'completed' } })
+        }
+      },
+    })
+    const running = test.run()
+    await running.mounted
+    const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
+    if (status === undefined) throw new Error('status line not mounted')
+    const line = status.render(200)[0] ?? ''
+    // Last call's usage fills the context; the cumulative total is both calls.
+    expect(line).toContain('3k/164k ctx')
+    expect(line).toContain('Σ 4.5k')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
   it('renders persisted diff metadata from tool results, with argument fallback and failure notes', async () => {
     const badMetas: Array<[string, unknown]> = [
       ['f', 'nope'],

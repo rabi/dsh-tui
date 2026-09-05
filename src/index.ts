@@ -135,6 +135,9 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
   }
   await refreshWindow(selection)
   let contextUsed = 0
+  // Cumulative tokens across every model call this session; the status line's
+  // `used` is only the last call, so the total is tracked separately.
+  let sessionTotal = 0
 
   // Slash commands route through the dsh-base command runtime; a settled
   // command renders through its command/done session event, so this surface
@@ -334,9 +337,10 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       return out
     },
     isRunning: () => agent.status === 'running',
-    context: () => contextWindow === undefined
-      ? { used: contextUsed }
-      : { used: contextUsed, window: contextWindow },
+    context: () => {
+      const base = { used: contextUsed, total: sessionTotal }
+      return contextWindow === undefined ? base : { ...base, window: contextWindow }
+    },
     onSubmit: (text: string): void => {
       if (text === '/exit' || text === '/quit') {
         void shutdown()
@@ -397,7 +401,11 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
       case 'assistant/message': {
         const usage = event.data.usage
-        if (usage !== undefined) contextUsed = usage.totalTokens ?? usage.inputTokens + usage.outputTokens
+        if (usage !== undefined) {
+          const callTokens = usage.totalTokens ?? usage.inputTokens + usage.outputTokens
+          contextUsed = callTokens
+          sessionTotal += callTokens
+        }
         const { text, reasoning } = splitAssistant(event.data.message.content)
         if (draft !== undefined) {
           draft.finish(text, reasoning)
