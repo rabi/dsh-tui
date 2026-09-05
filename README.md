@@ -16,6 +16,7 @@ Keys:
 | --- | --- |
 | `Enter` | send the prompt |
 | `Shift+Enter` | newline in the editor |
+| `Escape` | cancel the active turn (like `Ctrl+C` while running) |
 | `Ctrl+C` | cancel the active turn; quit when idle |
 | `Ctrl+D` | quit |
 | `/exit`, `/quit` | quit |

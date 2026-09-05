@@ -281,7 +281,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
       if (text === '/help') {
         tui.addNote('commands: /help · /clear · /compact · /model · /reload · /feedback · /goal · /exit · /<skill>')
-        tui.addNote('keys: ⏎ send · shift+⏎ newline · ^c cancel/quit · ^d quit')
+        tui.addNote('keys: ⏎ send · shift+⏎ newline · esc/^c cancel · ^c/^d quit')
         return
       }
       if (text.startsWith('/')) {

@@ -345,7 +345,7 @@ export interface TuiOptions {
   context: () => ContextUsage
   /** One submitted editor text (trimmed, non-empty). */
   onSubmit: (text: string) => void
-  /** Ctrl+C while work is active. */
+  /** Cancel request: Ctrl+C or Escape while work is active. */
   onCancel: () => void
   /** Quit request (Ctrl+C idle, Ctrl+D, /exit). */
   onExit: () => void
@@ -412,7 +412,7 @@ export function createTui(options: TuiOptions): TuiHandle {
       ? formatTokens(usage.used)
       : `${formatTokens(usage.used)}/${formatTokens(usage.window)}`
     const branch = git?.branch()
-    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ⏎ send · ^c cancel/quit · /exit`
+    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ⏎ send · esc/^c cancel · ^c quit · /exit`
   })
   let timer: ReturnType<typeof setInterval> | undefined
   /** Advance the frame and repaint while a turn runs; settle the line when it ends. */
@@ -450,6 +450,14 @@ export function createTui(options: TuiOptions): TuiHandle {
     if (data === '\x03') {
       if (options.isRunning()) options.onCancel()
       else options.onExit()
+      return { consume: true }
+    }
+    // Escape interrupts like Ctrl+C while work runs; idle it passes through to
+    // the editor (autocomplete cancel), matching pi's app.interrupt binding.
+    // The terminal layer disambiguates a bare ESC from split escape sequences.
+    if (data === '\x1b') {
+      if (!options.isRunning()) return
+      options.onCancel()
       return { consume: true }
     }
     if (data === '\x04') {

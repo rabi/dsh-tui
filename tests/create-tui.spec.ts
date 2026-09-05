@@ -173,6 +173,21 @@ describe('createTui', () => {
     expect(key('x')).toBeUndefined()
   })
 
+  it('routes Escape to cancel while running and passes it through idle', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    test.setRunning(true)
+    expect(key('\x1b')).toEqual({ consume: true })
+    expect(test.cancels).toEqual(['cancel'])
+    expect(test.exits).toEqual([])
+    test.setRunning(false)
+    // Idle Escape is not consumed so the editor can use it (autocomplete cancel).
+    expect(key('\x1b')).toBeUndefined()
+    expect(test.cancels).toEqual(['cancel'])
+    expect(test.exits).toEqual([])
+  })
+
   it('renders every transcript item kind, caches same-width frames, and re-wraps on resize', () => {
     const test = mount()
     test.handle.addUser('do the thing')
