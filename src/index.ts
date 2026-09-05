@@ -281,7 +281,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
       if (text === '/help') {
         tui.addNote('commands: /help · /clear · /compact · /model · /reload · /feedback · /goal · /exit · /<skill>')
-        tui.addNote('keys: ⏎ send · shift+⏎ newline · esc/^c cancel · ^c/^d quit')
+        tui.addNote('keys: ⏎ send · shift+⏎ newline · esc/^c cancel · alt+↑ dequeue · ^c/^d quit')
         return
       }
       if (text.startsWith('/')) {
@@ -294,6 +294,10 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     onExit: (): void => {
       void shutdown()
     },
+    queue: () => agent.inbox.nextTurn.map(m => joinText(m.content)),
+    // One synchronous splice removes exactly what it reports; the TUI puts
+    // those texts back into the editor (the alt+Up dequeue).
+    onDequeue: (): string[] => agent.inbox.splice('next-turn', 0, agent.inbox.nextTurn.length, []).map(m => joinText(m.content)),
   })
 
   // One event application shared by history replay and the live log.

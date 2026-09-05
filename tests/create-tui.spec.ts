@@ -14,7 +14,7 @@ const captured = vi.hoisted(() => ({
     children: Component[]
     listeners: Array<(data: string) => { consume?: boolean } | undefined>
   }>,
-  editors: [] as Array<{ onSubmit: ((text: string) => void) | null; history: string[] }>,
+  editors: [] as Array<{ onSubmit: ((text: string) => void) | null; history: string[]; text: string }>,
 }))
 
 vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
@@ -55,11 +55,18 @@ vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
     Editor: class {
       onSubmit: ((text: string) => void) | null = null
       history: string[] = []
+      text = ''
       constructor() {
         captured.editors.push(this)
       }
       addToHistory(text: string): void {
         this.history.push(text)
+      }
+      getText(): string {
+        return this.text
+      }
+      setText(text: string): void {
+        this.text = text
       }
     },
   }
@@ -79,14 +86,23 @@ function mount(options?: Partial<Parameters<typeof createTui>[0]>) {
   const cancels: string[] = []
   const exits: string[] = []
   let running = false
+  let queue: string[] = []
+  const dequeues: string[][] = []
   const handle = createTui({
     model: 'test-model',
     sessionId: 'session-test',
     isRunning: () => running,
     context: () => ({ used: 0, window: 164_000 }),
     onSubmit: (text: string) => { submitted.push(text) },
-    onCancel: () => { cancels.push('cancel') },
+    onCancel: () => { cancels.push('cancel'); queue = [] },
     onExit: () => { exits.push('exit') },
+    queue: () => queue,
+    onDequeue: (): string[] => {
+      const removed = queue
+      queue = []
+      if (removed.length > 0) dequeues.push(removed)
+      return removed
+    },
     ...options,
   })
   const screen = captured.screens[captured.screens.length - 1]
@@ -95,13 +111,16 @@ function mount(options?: Partial<Parameters<typeof createTui>[0]>) {
   if (editor === undefined) throw new Error('no editor mounted')
   const transcript = screen.children[0]
   const approvalLine = screen.children[1]
-  const status = screen.children[3]
-  if (transcript === undefined || approvalLine === undefined || status === undefined) {
+  const queueLine = screen.children[2]
+  const status = screen.children[4]
+  if (transcript === undefined || approvalLine === undefined || queueLine === undefined || status === undefined) {
     throw new Error('missing TUI children')
   }
   return {
-    handle, screen, editor, transcript, approvalLine, status,
-    submitted, cancels, exits, setRunning: (v: boolean): void => { running = v },
+    handle, screen, editor, transcript, approvalLine, queueLine, status,
+    submitted, cancels, exits, dequeues,
+    setRunning: (v: boolean): void => { running = v },
+    setQueue: (v: string[]): void => { queue = v },
   }
 }
 
@@ -186,6 +205,46 @@ describe('createTui', () => {
     expect(key('\x1b')).toBeUndefined()
     expect(test.cancels).toEqual(['cancel'])
     expect(test.exits).toEqual([])
+  })
+
+  it('renders queued follow-ups above the editor and hides them when empty', () => {
+    const test = mount()
+    expect(test.queueLine.render(80)).toEqual([])
+    test.setQueue(['first follow-up', 'second  follow-up'])
+    const lines = stripAnsi(test.queueLine.render(80).join('\n')).split('\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toContain('⏳ first follow-up')
+    expect(lines[1]).toContain('⏳ second follow-up')
+    test.setQueue([])
+    expect(test.queueLine.render(80)).toEqual([])
+  })
+
+  it('restores queued follow-ups into the editor on cancel', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    test.setRunning(true)
+    test.setQueue(['queued one', 'queued two'])
+    test.editor.setText('draft')
+    expect(key('\x1b')).toEqual({ consume: true })
+    expect(test.cancels).toEqual(['cancel'])
+    // Cancel cleared the inbox; the editor holds the queue plus the old draft.
+    expect(test.queueLine.render(80)).toEqual([])
+    expect(test.editor.text).toBe('queued one\n\nqueued two\n\ndraft')
+  })
+
+  it('dequeues with Alt+Up while running and passes through when the queue is empty', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    test.setRunning(true)
+    expect(key('\x1bp')).toBeUndefined()
+    expect(test.dequeues).toEqual([])
+    test.setQueue(['pulled back'])
+    expect(key('\x1bp')).toEqual({ consume: true })
+    expect(test.dequeues).toEqual([['pulled back']])
+    expect(test.editor.text).toBe('pulled back')
+    expect(test.queueLine.render(80)).toEqual([])
   })
 
   it('renders every transcript item kind, caches same-width frames, and re-wraps on resize', () => {

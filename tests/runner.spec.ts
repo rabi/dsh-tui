@@ -57,10 +57,17 @@ vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
     },
     Editor: class {
       onSubmit: ((text: string) => void) | null = null
+      text = ''
       constructor() {
         captured.editors.push(this)
       }
       addToHistory(): void {}
+      getText(): string {
+        return this.text
+      }
+      setText(text: string): void {
+        this.text = text
+      }
     },
     Markdown: class {
       text: string
@@ -432,7 +439,7 @@ describe('tui runner', () => {
     test.submit('hello')
     await waitFor(() => test.followups().length === 1, 'the followup')
     await waitFor(() => captured.markdowns.some(m => m.text === 'hi there'), 'the streamed answer')
-    const status = captured.screens[0]?.children[3] as { render(width: number): string[] } | undefined
+    const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
     if (status === undefined) throw new Error('status line not mounted')
     expect(status.render(200)[0]).toContain('3.3k/164k')
     test.submit('/exit')
@@ -585,7 +592,7 @@ describe('tui runner', () => {
     expect(transcript).toContain('⚙ edit({not json)')
     expect(transcript).toContain('⚙ edit("just a string")')
     expect(transcript).toContain('⚙ write({"foo":1})')
-    const status = captured.screens[0]?.children[3] as { render(width: number): string[] } | undefined
+    const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
     if (status === undefined) throw new Error('status line not mounted')
     expect(status.render(200)[0]).toContain('200/164k')
     test.submit('/quit')
@@ -771,6 +778,29 @@ describe('tui runner', () => {
     await test.ctx.fiber.dispose()
   })
 
+  it('queues follow-ups while running, renders them, and dequeues with Alt+Up', async () => {
+    const test = await bench({ startup: {} })
+    const running = test.run()
+    await running.mounted
+    const { agent } = test
+    ;(agent as unknown as { status: string }).status = 'running'
+    test.submit('first prompt')
+    test.submit('queued prompt')
+    expect(test.followups()).toHaveLength(2)
+    const queueLine = captured.screens[0]?.children[2] as { render(width: number): string[] } | undefined
+    if (queueLine === undefined) throw new Error('queue line not mounted')
+    const lines = queueLine.render(120).join('\n')
+    expect(lines).toContain('first prompt')
+    expect(lines).toContain('queued prompt')
+    test.press('\x1bp')
+    expect(agent.inbox.nextTurn).toHaveLength(0)
+    const editor = captured.editors[0] as unknown as { text: string }
+    expect(editor.text).toContain('queued prompt')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
   it('honors --session for the fresh session id', async () => {
     const test = await bench({ startup: { sessionId: 'fixed-id' } })
     const running = test.run()
@@ -803,7 +833,7 @@ describe('tui runner', () => {
       const test = await bench({ startup: {}, ...options })
       const running = test.run()
       await running.mounted
-      const status = captured.screens[0]?.children[3] as { render(width: number): string[] } | undefined
+      const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
       if (status === undefined) throw new Error('status line not mounted')
       const line = status.render(200)[0] ?? ''
       expect(line).toContain('0 ctx')
@@ -830,7 +860,7 @@ describe('tui runner', () => {
     const running = test.run()
     await running.mounted
     await waitFor(() => test.transcriptText().includes('model: test-provider/resumed-model'), 'the replayed command note')
-    const status = captured.screens[0]?.children[3] as { render(width: number): string[] } | undefined
+    const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
     if (status === undefined) throw new Error('status line not mounted')
     expect(status.render(200)[0]).toContain('resumed-model')
     test.submit('/exit')
@@ -850,7 +880,7 @@ describe('tui runner', () => {
     await waitFor(() => test.transcriptText().includes('alt-provider: alt-model'), 'the second provider note')
     test.submit('/model test-provider/new-model')
     await waitFor(() => test.transcriptText().includes('model: test-provider/new-model'), 'the switch note')
-    const status = captured.screens[0]?.children[3] as { render(width: number): string[] } | undefined
+    const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
     if (status === undefined) throw new Error('status line not mounted')
     expect(status.render(200)[0]).toContain('new-model')
     // A bare model id keeps the current provider; the adapter may add an effort.
@@ -873,7 +903,7 @@ describe('tui runner', () => {
     test.submit('/reload')
     await waitFor(() => test.transcriptText().includes('reloaded: test-provider/other-model'), 'the reload note')
     expect(test.replaceCalls()).toBe(0)
-    const status = captured.screens[0]?.children[3] as { render(width: number): string[] } | undefined
+    const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
     if (status === undefined) throw new Error('status line not mounted')
     expect(status.render(200)[0]).toContain('other-model')
     test.submit('/exit')

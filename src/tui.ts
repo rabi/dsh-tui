@@ -13,6 +13,7 @@ import {
   Markdown,
   ProcessTerminal,
   TuiMainScreen,
+  matchesKey,
   truncateToWidth,
   wrapTextWithAnsi,
   type Component,
@@ -268,6 +269,22 @@ class StatusLine implements Component {
   }
 }
 
+/** One dim line per queued follow-up message, rendered above the editor. */
+class QueueLine implements Component {
+  constructor(private readonly texts: () => string[]) {}
+  /** The lines recompute from the live queue each frame. */
+  invalidate(): void {}
+  render(width: number): string[] {
+    const out: string[] = []
+    for (const text of this.texts()) {
+      const flat = text.replace(/\s+/gu, ' ').trim()
+      if (flat === '') continue
+      out.push(S.dim(`⏳ ${truncateToWidth(flat, width - PADX * 2 - 2, '…', false)}`))
+    }
+    return pad(out)
+  }
+}
+
 /** The three answers an in-terminal approval prompt can produce. */
 export type ApprovalAnswer = 'allowed-once' | 'rejected' | 'cancelled'
 
@@ -349,6 +366,10 @@ export interface TuiOptions {
   onCancel: () => void
   /** Quit request (Ctrl+C idle, Ctrl+D, /exit). */
   onExit: () => void
+  /** Texts of pending follow-up messages, oldest first; empty when none. */
+  queue?: () => string[]
+  /** Atomically remove every pending follow-up; returns their texts, oldest first. */
+  onDequeue?: () => string[]
   /** Directory inside a git repository for the status line's branch segment; omit to hide it. */
   gitCwd?: string
 }
@@ -432,8 +453,11 @@ export function createTui(options: TuiOptions): TuiHandle {
     editor.addToHistory(text)
     options.onSubmit(text)
   }
+  const queueTexts = (): string[] => options.queue?.() ?? []
+  const queueLine = new QueueLine(queueTexts)
   tui.addChild(transcript)
   tui.addChild(approvalLine)
+  tui.addChild(queueLine)
   tui.addChild(editor)
   tui.addChild(status)
   tui.setFocus(editor)
@@ -446,9 +470,20 @@ export function createTui(options: TuiOptions): TuiHandle {
     },
   })
 
+  /** Cancel the active turn; queued follow-ups come back into the editor. */
+  const cancelWithRestore = (): void => {
+    const queued = queueTexts()
+    options.onCancel()
+    if (queued.length > 0) {
+      // Cancel clears the inbox, so the captured texts are the only copy left.
+      const existing = editor.getText()
+      editor.setText(queued.join('\n\n') + (existing === '' ? '' : `\n\n${existing}`))
+      tui.requestRender()
+    }
+  }
   tui.addInputListener((data: string) => {
     if (data === '\x03') {
-      if (options.isRunning()) options.onCancel()
+      if (options.isRunning()) cancelWithRestore()
       else options.onExit()
       return { consume: true }
     }
@@ -457,8 +492,20 @@ export function createTui(options: TuiOptions): TuiHandle {
     // The terminal layer disambiguates a bare ESC from split escape sequences.
     if (data === '\x1b') {
       if (!options.isRunning()) return
-      options.onCancel()
+      cancelWithRestore()
       return { consume: true }
+    }
+    // Alt+Up pulls every queued follow-up back into the editor (pi's dequeue);
+    // the turn keeps running.
+    if (matchesKey(data, 'alt+up')) {
+      const removed = options.onDequeue?.()
+      if (removed !== undefined && removed.length > 0) {
+        const existing = editor.getText()
+        editor.setText(removed.join('\n\n') + (existing === '' ? '' : `\n\n${existing}`))
+        tui.requestRender()
+        return { consume: true }
+      }
+      return
     }
     if (data === '\x04') {
       options.onExit()

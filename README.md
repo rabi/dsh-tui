@@ -14,14 +14,17 @@ Keys:
 
 | Key | Action |
 | --- | --- |
-| `Enter` | send the prompt |
+| `Enter` | send the prompt; queues a follow-up turn while one is running |
 | `Shift+Enter` | newline in the editor |
 | `Escape` | cancel the active turn (like `Ctrl+C` while running) |
 | `Ctrl+C` | cancel the active turn; quit when idle |
+| `Alt+Up` | pull queued follow-ups back into the editor |
 | `Ctrl+D` | quit |
 | `/exit`, `/quit` | quit |
 | `/help` | show the command and key reference |
 | `/clear` | clear the transcript |
+
+Prompts sent while a turn is running queue as follow-up turns and render as dim `⏳` lines above the editor. Cancelling the turn (or `Alt+Up`) pulls the queued texts back into the editor for re-editing.
 
 Tool approvals (the base profile's default `ask` policy) are answered in-terminal with a `y`/`n` prompt; cancelling the turn cancels the pending request.
 
