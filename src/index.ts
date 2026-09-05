@@ -12,7 +12,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import type { CommandResult } from '@deepseek-ai/dsh-commands'
+import type { CommandDescriptor, CommandResult } from '@deepseek-ai/dsh-commands'
+import type { SlashCommand } from '@earendil-works/pi-tui'
 import type { SkillSummary } from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -262,10 +263,58 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     tui.addNote(`unknown command: ${line.split(/\s+/u)[0]}`)
   }
 
+  // Editor autocomplete roster: the TUI's own shortcuts first (they intercept
+  // before the command runtime), then the registry's effective view, then
+  // user-invocable skills. First name wins so the dropdown mirrors dispatch.
+  const BUILTIN_TUI_COMMANDS: readonly SlashCommand[] = [
+    { name: 'help', description: 'Show the command and key reference' },
+    { name: 'clear', description: 'Clear the transcript' },
+    { name: 'exit', description: 'Quit' },
+    { name: 'quit', description: 'Quit' },
+  ]
+  let registeredCommands: readonly CommandDescriptor[] = []
+  let skillCommands: readonly SlashCommand[] = []
+  const refreshCommands = (): void => {
+    registeredCommands = commands === undefined ? [] : commands.list(agent)
+  }
+  const refreshSkills = (): void => {
+    if (skills === undefined) return
+    void skills.list({}).then((listed) => {
+      skillCommands = Array.isArray(listed) ? listed
+        .filter(candidate => candidate.invocation.userInvocable)
+        .map(candidate => ({ name: candidate.name, description: candidate.description }))
+        : []
+    }).catch(() => {
+      skillCommands = []
+    })
+  }
+  refreshCommands()
+  refreshSkills()
+  ctx.on('commands/change', refreshCommands)
+  ctx.on('skills/change', refreshSkills)
+
   const tui = createTui({
     model: selection.model,
     sessionId: agent.id,
     gitCwd: process.cwd(),
+    commands: () => {
+      const seen = new Set<string>()
+      const out: SlashCommand[] = []
+      for (const command of [
+        ...BUILTIN_TUI_COMMANDS,
+        ...registeredCommands.map(descriptor => ({
+          name: descriptor.name,
+          description: descriptor.description,
+          ...(descriptor.input?.hint === undefined ? {} : { argumentHint: descriptor.input.hint }),
+        })),
+        ...skillCommands,
+      ]) {
+        if (seen.has(command.name)) continue
+        seen.add(command.name)
+        out.push(command)
+      }
+      return out
+    },
     isRunning: () => agent.status === 'running',
     context: () => contextWindow === undefined
       ? { used: contextUsed }
@@ -281,7 +330,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
       if (text === '/help') {
         tui.addNote('commands: /help · /clear · /compact · /model · /reload · /feedback · /goal · /exit · /<skill>')
-        tui.addNote('keys: ⏎ send · shift+⏎ newline · ^o tools · esc/^c cancel · alt+↑ dequeue · ^c/^d quit')
+        tui.addNote('keys: ⏎ send · shift+⏎ newline · tab complete · ^o tools · esc/^c cancel · alt+↑ dequeue · ^c/^d quit')
         return
       }
       if (text.startsWith('/')) {

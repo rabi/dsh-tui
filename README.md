@@ -16,6 +16,7 @@ Keys:
 | --- | --- |
 | `Enter` | send the prompt; queues a follow-up turn while one is running |
 | `Shift+Enter` | newline in the editor |
+| `Tab` | complete slash commands and file paths |
 | `Escape` | cancel the active turn (like `Ctrl+C` while running) |
 | `Ctrl+C` | cancel the active turn; quit when idle |
 | `Alt+Up` | pull queued follow-ups back into the editor |
@@ -26,6 +27,8 @@ Keys:
 | `/clear` | clear the transcript |
 
 Prompts sent while a turn is running queue as follow-up turns and render as dim `⏳` lines above the editor. Cancelling the turn (or `Alt+Up`) pulls the queued texts back into the editor for re-editing.
+
+Typing `/` at the start of a message offers slash-command completion — the TUI's own shortcuts, commands registered by the profile, and user-invocable skills — with `Tab` completing the highlighted entry; file paths complete from the working directory. The roster tracks registry changes live, so commands added or removed at runtime appear in the dropdown without a restart.
 
 Tool approvals (the base profile's default `ask` policy) are answered in-terminal with a `y`/`n` prompt; cancelling the turn cancels the pending request.
 

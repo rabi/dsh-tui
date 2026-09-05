@@ -76,6 +76,34 @@ describe('Transcript', () => {
     expect(at(lines, 1)).toContain('\x1b[31m✗\x1b[39m')
   })
 
+  it('expands full tool output on toggle and collapses it again', () => {
+    const t = new Transcript()
+    t.addToolCall('bash', '{"command":"ls -la"}')
+    t.addToolResult(false, 'line one\nline two')
+    t.addToolResult(true, '')
+    // Collapsed: one preview line per item.
+    expect(t.render(80).length).toBe(3)
+    t.toggleToolsExpanded()
+    const lines = t.render(80)
+    // Expanded call: bare name on its own line, full arguments below.
+    expect(stripAnsi(at(lines, 0))).toBe(' ⚙ bash')
+    expect(stripAnsi(at(lines, 1))).toContain('{"command":"ls -la"}')
+    // Expanded result keeps its lines; an empty result shows a placeholder.
+    expect(stripAnsi(at(lines, 3))).toContain('line one')
+    expect(stripAnsi(at(lines, 4))).toContain('line two')
+    expect(stripAnsi(at(lines, 6))).toContain('(no output)')
+    t.toggleToolsExpanded()
+    expect(t.render(80).length).toBe(3)
+  })
+
+  it('caps very long tool results with a truncation marker', () => {
+    const t = new Transcript()
+    t.addToolResult(false, 'x'.repeat(100_001))
+    t.toggleToolsExpanded()
+    const lines = t.render(80)
+    expect(stripAnsi(at(lines, lines.length - 1))).toContain('[truncated 1 chars]')
+  })
+
   it('renders an edit diff with red removals and green additions under a dim header', () => {
     const t = new Transcript()
     t.addDiff('edit src/a.ts', 'old one\nold two', 'new one\n\nnew three\n')

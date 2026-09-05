@@ -16,13 +16,14 @@ import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-commands'
+import type { AutocompleteProvider } from '@earendil-works/pi-tui'
 import { apply } from '../src/index.ts'
 import type { TuiStartupValues } from '../src/startup.ts'
 
 /** Test-side observation of the mocked pi-tui surface. */
 const captured = vi.hoisted(() => ({
   inputListeners: [] as Array<(data: string) => { consume?: boolean } | undefined>,
-  editors: [] as Array<{ onSubmit: ((text: string) => void) | null }>,
+  editors: [] as Array<{ onSubmit: ((text: string) => void) | null; providers: unknown[] }>,
   markdowns: [] as Array<{ text: string }>,
   screens: [] as Array<{ children: unknown[] }>,
 }))
@@ -58,8 +59,12 @@ vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
     Editor: class {
       onSubmit: ((text: string) => void) | null = null
       text = ''
+      providers: unknown[] = []
       constructor() {
         captured.editors.push(this)
+      }
+      setAutocompleteProvider(provider: unknown): void {
+        this.providers.push(provider)
       }
       addToHistory(): void {}
       getText(): string {
@@ -108,6 +113,7 @@ async function waitFor(predicate: () => boolean, what: string): Promise<void> {
 interface FakeCommandDefinition {
   name: string
   description: string
+  input?: { hint: string }
   handler: (invocation: { rawInput: string }) => unknown
 }
 
@@ -137,7 +143,7 @@ interface BenchOptions {
   /** Reject settings.replace with this value so saving the model default fails. */
   failSettingsWith?: unknown
   /** Skill catalog for the /name invocation check; 'observation' makes list() return a non-array observation. */
-  skills?: Array<{ name: string; userInvocable: boolean }> | 'observation'
+  skills?: Array<{ name: string; userInvocable: boolean; description?: string }> | 'observation'
   /** Make skills.list reject. */
   failSkills?: boolean
 }
@@ -223,6 +229,7 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
         if (benchOptions.skills === 'observation') return { complete: false }
         return (benchOptions.skills ?? []).map(entry => ({
           name: entry.name,
+          ...(entry.description === undefined ? {} : { description: entry.description }),
           invocation: { modelInvocable: true, userInvocable: entry.userInvocable },
         }))
       },
@@ -243,7 +250,11 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
           if (i >= 0) registeredCommands.splice(i, 1)
         }
       },
-      list: (): unknown[] => [],
+      list: (): unknown[] => registeredCommands.map(d => ({
+        name: d.name,
+        description: d.description,
+        ...(d.input === undefined ? {} : { input: d.input }),
+      })),
       find: (): undefined => undefined,
       execute: async (agentArg: { session: Session }, line: string, _images: readonly unknown[], signal: AbortSignal): Promise<unknown> => {
         if (benchOptions.failCommands) throw new Error('command runtime offline')
@@ -997,6 +1008,77 @@ describe('tui runner', () => {
     test.submit('/exit')
     expect(await running.code).toBe(0)
     await test.ctx.fiber.dispose()
+  })
+
+  describe('slash-command autocomplete', () => {
+    const providerOf = (): AutocompleteProvider => {
+      const editor = captured.editors[0]
+      const provider = editor?.providers[0]
+      if (provider === undefined) throw new Error('no autocomplete provider wired')
+      return provider as AutocompleteProvider
+    }
+    const names = async (provider: AutocompleteProvider): Promise<string[]> => {
+      const res = await provider.getSuggestions(['/'], 0, 1, { signal: new AbortController().signal })
+      return res === null ? [] : res.items.map(item => item.value)
+    }
+    /** The skill roster settles on a microtask; poll until the predicate holds. */
+    const waitForNames = async (
+      provider: AutocompleteProvider,
+      predicate: (names: string[]) => boolean,
+      what: string,
+    ): Promise<string[]> => {
+      const deadline = Date.now() + 2000
+      for (;;) {
+        const current = await names(provider)
+        if (predicate(current)) return current
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+    }
+
+    it('offers builtins, registry commands with hints, and user-invocable skills, deduped by name', async () => {
+      const test = await bench({
+        startup: {},
+        skills: [
+          { name: 'review', userInvocable: true, description: 'Review the diff' },
+          { name: 'hidden', userInvocable: false },
+          { name: 'help', userInvocable: true },
+        ],
+      })
+      const running = test.run()
+      await running.mounted
+      const provider = providerOf()
+      const all = await waitForNames(provider, list => list.includes('review'), 'the skill roster')
+      expect(all).toEqual(expect.arrayContaining(['help', 'clear', 'exit', 'quit', 'model', 'reload', 'review']))
+      expect(all).not.toContain('hidden')
+      // First name wins: the builtin /help shadows the same-named skill.
+      expect(all.filter(name => name === 'help')).toHaveLength(1)
+      // Argument hints ride along on the description.
+      const filtered = await provider.getSuggestions(['/mod'], 0, 4, { signal: new AbortController().signal })
+      const model = filtered?.items.find(item => item.value === 'model')
+      expect(model?.description).toBe('[list | provider/model] — Show or switch the session model')
+      test.submit('/exit')
+      expect(await running.code).toBe(0)
+      await test.ctx.fiber.dispose()
+    })
+
+    it('refreshes the roster when the command registry changes', async () => {
+      const test = await bench({ startup: {} })
+      const running = test.run()
+      await running.mounted
+      const provider = providerOf()
+      expect(await names(provider)).not.toContain('compact')
+      const commands = test.ctx.get('commands') as unknown as { register: (d: FakeCommandDefinition) => () => void }
+      const dispose = commands.register({ name: 'compact', description: 'Compact the context', handler: () => ({ kind: 'success' }) })
+      test.ctx.emit('commands/change')
+      expect(await names(provider)).toContain('compact')
+      dispose()
+      test.ctx.emit('commands/change')
+      expect(await names(provider)).not.toContain('compact')
+      test.submit('/exit')
+      expect(await running.code).toBe(0)
+      await test.ctx.fiber.dispose()
+    })
   })
 
   it('survives a rejecting command runtime without double-noting the failure', async () => {

@@ -9,6 +9,7 @@
  */
 
 import {
+  CombinedAutocompleteProvider,
   Editor,
   Markdown,
   ProcessTerminal,
@@ -16,7 +17,10 @@ import {
   matchesKey,
   truncateToWidth,
   wrapTextWithAnsi,
+  type AutocompleteItem,
+  type AutocompleteProvider,
   type Component,
+  type SlashCommand,
 } from '@earendil-works/pi-tui'
 import { createGitStatus } from './git.ts'
 
@@ -402,6 +406,8 @@ export interface TuiOptions {
   onDequeue?: () => string[]
   /** Directory inside a git repository for the status line's branch segment; omit to hide it. */
   gitCwd?: string
+  /** Slash commands offered by the editor's autocomplete; re-read on every suggestion request. Omit to disable it. */
+  commands?: () => readonly SlashCommand[]
 }
 
 /** The mounted TUI surface and its transcript API. */
@@ -447,6 +453,27 @@ function formatTokens(count: number): string {
   return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}k`
 }
 
+/**
+ * An autocomplete provider that always sees the current command list: each
+ * request delegates to one combined provider built from the latest commands,
+ * so registry changes need no re-wiring. File-path completion shares the
+ * provider, rooted at `basePath` (pi's CombinedAutocompleteProvider).
+ */
+export function createCommandAutocompleteProvider(
+  commands: () => readonly SlashCommand[],
+  basePath: string,
+): AutocompleteProvider {
+  const provider = (): CombinedAutocompleteProvider => new CombinedAutocompleteProvider([...commands()], basePath)
+  return {
+    getSuggestions(lines: string[], cursorLine: number, cursorCol: number, options: { signal: AbortSignal; force?: boolean }) {
+      return provider().getSuggestions(lines, cursorLine, cursorCol, options)
+    },
+    applyCompletion(lines: string[], cursorLine: number, cursorCol: number, item: AutocompleteItem, prefix: string) {
+      return provider().applyCompletion(lines, cursorLine, cursorCol, item, prefix)
+    },
+  }
+}
+
 export function createTui(options: TuiOptions): TuiHandle {
   const tui = new TuiMainScreen(new ProcessTerminal(), true)
   const transcript = new Transcript((): void => { tui.requestRender() })
@@ -478,6 +505,11 @@ export function createTui(options: TuiOptions): TuiHandle {
     }
   }
   const editor = new Editor(tui, EDITOR_THEME)
+  // Slash-command (and file-path) autocomplete; the getter keeps the roster
+  // live across registry changes without re-wiring the editor.
+  if (options.commands !== undefined) {
+    editor.setAutocompleteProvider(createCommandAutocompleteProvider(options.commands, process.cwd()))
+  }
   editor.onSubmit = (text: string): void => {
     if (text === '') return
     editor.addToHistory(text)

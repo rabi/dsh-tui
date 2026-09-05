@@ -4,8 +4,8 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Component } from '@earendil-works/pi-tui'
-import { createTui } from '../src/tui.ts'
+import type { AutocompleteProvider, Component, SlashCommand } from '@earendil-works/pi-tui'
+import { createCommandAutocompleteProvider, createTui } from '../src/tui.ts'
 
 const captured = vi.hoisted(() => ({
   screens: [] as Array<{
@@ -14,7 +14,7 @@ const captured = vi.hoisted(() => ({
     children: Component[]
     listeners: Array<(data: string) => { consume?: boolean } | undefined>
   }>,
-  editors: [] as Array<{ onSubmit: ((text: string) => void) | null; history: string[]; text: string }>,
+  editors: [] as Array<{ onSubmit: ((text: string) => void) | null; history: string[]; text: string; providers: unknown[] }>,
 }))
 
 vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
@@ -56,8 +56,12 @@ vi.mock('@earendil-works/pi-tui', async (importOriginal) => {
       onSubmit: ((text: string) => void) | null = null
       history: string[] = []
       text = ''
+      providers: unknown[] = []
       constructor() {
         captured.editors.push(this)
+      }
+      setAutocompleteProvider(provider: unknown): void {
+        this.providers.push(provider)
       }
       addToHistory(text: string): void {
         this.history.push(text)
@@ -192,6 +196,20 @@ describe('createTui', () => {
     expect(key('x')).toBeUndefined()
   })
 
+  it('toggles full tool output on Ctrl+O and consumes the key', () => {
+    const test = mount()
+    test.handle.addToolCall('bash', '{"command":"ls"}')
+    test.handle.addToolResult(false, 'out')
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    const collapsed = stripAnsi(test.transcript.render(80).join('\n'))
+    expect(key('\x0f')).toEqual({ consume: true })
+    const expanded = stripAnsi(test.transcript.render(80).join('\n'))
+    expect(expanded).not.toBe(collapsed)
+    expect(key('\x0f')).toEqual({ consume: true })
+    expect(stripAnsi(test.transcript.render(80).join('\n'))).toBe(collapsed)
+  })
+
   it('routes Escape to cancel while running and passes it through idle', () => {
     const test = mount()
     const key = test.screen.listeners[0]
@@ -247,6 +265,56 @@ describe('createTui', () => {
     expect(test.queueLine.render(80)).toEqual([])
   })
 
+  it('prepends dequeued follow-ups above existing editor text', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    test.setRunning(true)
+    test.setQueue(['pulled back'])
+    test.editor.setText('draft')
+    expect(key('\x1bp')).toEqual({ consume: true })
+    expect(test.editor.text).toBe('pulled back\n\ndraft')
+  })
+
+  it('restores queued follow-ups into an empty editor without a blank gap', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    test.setRunning(true)
+    test.setQueue(['queued one'])
+    expect(key('\x1b')).toEqual({ consume: true })
+    expect(test.editor.text).toBe('queued one')
+  })
+
+  it('skips whitespace-only queued follow-ups in the queue line', () => {
+    const test = mount()
+    test.setQueue(['   ', 'real one'])
+    const lines = test.queueLine.render(80)
+    expect(lines).toHaveLength(1)
+    expect(stripAnsi(lines[0] ?? '')).toContain('⏳ real one')
+  })
+
+  it('mounts without a queue service and lets Alt+Up pass through', () => {
+    const handle = createTui({
+      model: 'test-model',
+      sessionId: 'session-test',
+      isRunning: () => true,
+      context: () => ({ used: 0, window: 164_000 }),
+      onSubmit: (): void => {},
+      onCancel: (): void => {},
+      onExit: (): void => {},
+    })
+    const screen = captured.screens[captured.screens.length - 1]
+    if (screen === undefined) throw new Error('no screen mounted')
+    const key = screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    expect(key('\x1bp')).toBeUndefined()
+    const queueLine = screen.children[2]
+    if (queueLine === undefined) throw new Error('missing queue line')
+    expect(queueLine.render(80)).toEqual([])
+    handle.stop()
+  })
+
   it('renders every transcript item kind, caches same-width frames, and re-wraps on resize', () => {
     const test = mount()
     test.handle.addUser('do the thing')
@@ -283,6 +351,7 @@ describe('createTui', () => {
     expect(narrow).not.toBe(cached)
     test.transcript.invalidate()
     test.approvalLine.invalidate()
+    test.queueLine.invalidate()
     test.status.invalidate()
   })
 
@@ -354,5 +423,63 @@ describe('createTui', () => {
       expect(stripAnsi(test.status.render(200)[0] ?? '')).toContain(`⎇ ${sha.slice(0, 7)}`)
       test.handle.stop()
     })
+  })
+
+  it('wires editor autocomplete only when a command roster is provided', async () => {
+    const plain = mount()
+    expect(plain.editor.providers).toEqual([])
+    const wired = mount({ commands: () => [{ name: 'help', description: 'Show help' }] })
+    expect(wired.editor.providers).toHaveLength(1)
+    const provider = wired.editor.providers[0] as AutocompleteProvider
+    const suggestions = await provider.getSuggestions(['/'], 0, 1, { signal: new AbortController().signal })
+    expect(suggestions?.items.map(item => item.value)).toEqual(['help'])
+    plain.handle.stop()
+    wired.handle.stop()
+  })
+})
+
+describe('createCommandAutocompleteProvider', () => {
+  let baseDir: string | undefined
+
+  afterEach(async () => {
+    if (baseDir !== undefined) await rm(baseDir, { recursive: true, force: true })
+    baseDir = undefined
+  })
+
+  const signal = (): AbortSignal => new AbortController().signal
+
+  it('fuzzy-filters slash commands and re-reads the roster on every request', async () => {
+    let roster: readonly SlashCommand[] = [
+      { name: 'help', description: 'Show help' },
+      { name: 'clear', description: 'Clear the transcript' },
+    ]
+    const provider = createCommandAutocompleteProvider(() => roster, process.cwd())
+    const all = await provider.getSuggestions(['/'], 0, 1, { signal: signal() })
+    expect(all?.items.map(item => item.value)).toEqual(['help', 'clear'])
+    expect(all?.prefix).toBe('/')
+    const fuzzy = await provider.getSuggestions(['/hp'], 0, 3, { signal: signal() })
+    expect(fuzzy?.items.map(item => item.value)).toEqual(['help'])
+    roster = [{ name: 'compact', description: 'Compact the context' }]
+    const refreshed = await provider.getSuggestions(['/'], 0, 1, { signal: signal() })
+    expect(refreshed?.items.map(item => item.value)).toEqual(['compact'])
+  })
+
+  it('completes a slash command name with a trailing space', () => {
+    const provider = createCommandAutocompleteProvider(() => [{ name: 'help', description: 'Show help' }], process.cwd())
+    const result = provider.applyCompletion(['/he'], 0, 3, { value: 'help', label: 'help' }, '/he')
+    expect(result.lines).toEqual(['/help '])
+    expect(result.cursorCol).toBe(6)
+  })
+
+  it('offers file paths under the base directory and nothing for plain prose', async () => {
+    baseDir = await mkdtemp(join(tmpdir(), 'dsh-tui-ac-'))
+    await mkdir(join(baseDir, 'src'))
+    await writeFile(join(baseDir, 'src', 'tui.ts'), '')
+    await writeFile(join(baseDir, 'src', 'index.ts'), '')
+    const provider = createCommandAutocompleteProvider(() => [], baseDir)
+    const files = await provider.getSuggestions(['src/'], 0, 4, { signal: signal() })
+    expect(files?.items.map(item => item.value).sort()).toEqual(['src/index.ts', 'src/tui.ts'])
+    const prose = await provider.getSuggestions(['hello world'], 0, 11, { signal: signal() })
+    expect(prose).toBeNull()
   })
 })
