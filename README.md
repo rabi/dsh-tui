@@ -24,7 +24,7 @@ Keys:
 | `Ctrl+X` | copy the last assistant message to the system clipboard |
 | `Ctrl+G` | open the current text in your external editor |
 | `Shift+Tab` | cycle the thinking level (when the model offers levels) |
-| `Ctrl+T` | toggle reasoning on/off (default level ↔ off) |
+| `Ctrl+T` | hide/show thinking blocks in the transcript |
 | `Ctrl+D` | quit |
 | `/exit`, `/quit` | quit |
 | `/help` | show the command and key reference |
@@ -50,6 +50,9 @@ Tool approvals (the base profile's default `ask` policy) are answered in-termina
 ### Background notes
 Background activity that would otherwise be silent gets a transcript note: an automatic mid-turn compaction shows `⋯ compacting conversation…` and settles to `✓ compacted conversation` (or a red failure line), and each scheduled model retry logs one dim line such as `↻ retrying model call 1/3 in ~2s — 429 Too Many Requests`. Manual `/compact` reports through its own command result instead, and the notes replay on resume because they derive from durable session events.
 
+### Thinking
+Reasoning models stream their thinking as dim italic text above each answer. `Ctrl+T` collapses every thinking block to a single dim `Thinking...` label and restores them on the next press; `Shift+Tab` cycles the model's thinking level when it offers levels, which the status line reports in parentheses after the model name.
+
 ### Status line
 A braille spinner animates while a turn runs — including long tool calls — so the surface never looks frozen. Left to right, the line shows:
 
@@ -59,7 +62,7 @@ A braille spinner animates while a turn runs — including long tool calls — s
 - **Total** — cumulative tokens spent this session (`Σ 45.2k`), distinct from the current context fill; shown once tokens are spent.
 - **Throughput** — the last call's output tokens over its generation time (`128 t/s`); tool execution excluded, so it tracks current model speed. Shown once a call has completed.
 - **Cache** — share of prompt tokens served from cache (`66% cache`); shown only once cache reads are observed.
-- **Key hints** — follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^x copy · ^g edit · ^t/shift+tab think · ^c/^d quit`, the thinking hint only when the model offers levels), running shows `esc/^c cancel` plus `alt+↑ dequeue` while follow-ups are queued.
+- **Key hints** — follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^x copy · ^g edit · ^t think · shift+tab level · ^c/^d quit`, the `shift+tab level` hint only when the model offers levels), running shows `esc/^c cancel` plus `alt+↑ dequeue` while follow-ups are queued.
 
 ## Install into a profile
 

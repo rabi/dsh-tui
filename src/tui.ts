@@ -141,6 +141,8 @@ export class Transcript implements Component {
   private lastLines: string[] = []
   /** Whether tool calls/results render their full text (Ctrl+O). */
   private toolsExpanded = false
+  /** Whether assistant thinking blocks collapse to a label (Ctrl+T). */
+  private thinkingHidden = false
   /** Raw markdown of the most recent assistant message, for Ctrl+X copy. */
   private lastAssistantText = ''
 
@@ -161,9 +163,25 @@ export class Transcript implements Component {
     this.change()
   }
 
+  /** Flip the thinking-block visibility; every assistant item re-renders. */
+  toggleThinkingHidden(): void {
+    this.thinkingHidden = !this.thinkingHidden
+    for (const item of this.items) item.invalidate()
+    this.change()
+  }
+
   /** Raw markdown of the last assistant message, or '' if none yet. */
   lastAssistant(): string {
     return this.lastAssistantText
+  }
+
+  /** Reasoning lines for one assistant message: the full dim text, or a single
+   * dim "Thinking..." label while hidden (Ctrl+T). Empty when there is none. */
+  private reasoningLines(reasoning: string, width: number): string[] {
+    if (reasoning === '') return []
+    const inner = width - PADX * 2
+    if (this.thinkingHidden) return pad([S.dim(S.italic('Thinking...'))])
+    return pad(wrapTextWithAnsi(S.dim(S.italic(reasoning)), inner)).filter(l => l.trim() !== '')
   }
 
   /** Render one committed user prompt. */
@@ -177,7 +195,7 @@ export class Transcript implements Component {
     this.lastAssistantText = text
     const md = new Markdown(text, PADX, 0, MD_THEME)
     const item = cachedItem(width => [
-      ...pad(wrapTextWithAnsi(S.dim(S.italic(reasoning)), width - PADX * 2)).filter(l => l.trim() !== ''),
+      ...this.reasoningLines(reasoning, width),
       ...md.render(width),
     ])
     this.items.push(item)
@@ -194,7 +212,7 @@ export class Transcript implements Component {
     const item = cachedItem((width) => {
       if (text === '' && reasoning === '') return []
       return [
-        ...pad(wrapTextWithAnsi(S.dim(S.italic(reasoning)), width - PADX * 2)).filter(l => l.trim() !== ''),
+        ...this.reasoningLines(reasoning, width),
         ...md.render(width),
       ]
     })
@@ -459,8 +477,6 @@ export interface TuiOptions {
   reasoning?: () => { level: string | undefined; available: boolean }
   /** Cycle to the next reasoning effort (Shift+Tab). */
   onCycleReasoning?: () => void
-  /** Toggle reasoning on/off (Ctrl+T). */
-  onToggleReasoning?: () => void
 }
 
 /** The mounted TUI surface and its transcript API. */
@@ -578,11 +594,14 @@ export function createTui(options: TuiOptions): TuiHandle {
     // while a level is active (off = provider default, shown bare).
     const reasoning = options.reasoning?.()
     const modelText = reasoning?.level === undefined ? options.model : `${options.model} (${reasoning.level})`
+    // Ctrl+T hides thinking blocks regardless of model; Shift+Tab cycles levels
+    // only when the model offers them, so the level hint follows availability.
+    const thinkHint = reasoning?.available ? '^t think · shift+tab level' : '^t think'
     // Hints follow the state: while a turn runs, cancelling (and pulling
     // queued follow-ups back) is what matters; idle, the input shortcuts.
     const hints = running
       ? ['esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
-      : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^g edit', ...(reasoning?.available ? ['^t/shift+tab think'] : []), '^c/^d quit']
+      : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^g edit', thinkHint, '^c/^d quit']
     return `${prefix}${modelText}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText}${tpsText}${cacheText} · ${hints.join(' · ')}`
   })
   let timer: ReturnType<typeof setInterval> | undefined
@@ -716,16 +735,17 @@ export function createTui(options: TuiOptions): TuiHandle {
       void openExternalEditor()
       return { consume: true }
     }
-    // Shift+Tab cycles the reasoning effort; Ctrl+T toggles it on/off. Both are
-    // no-ops (and pass through to the editor) when the runner did not wire them.
+    // Shift+Tab cycles the reasoning effort; a no-op (passing through to the
+    // editor) when the runner did not wire it.
     if (matchesKey(data, 'shift+tab')) {
       if (options.onCycleReasoning === undefined) return
       options.onCycleReasoning()
       return { consume: true }
     }
+    // Ctrl+T toggles thinking-block visibility in the transcript (pi's
+    // app.thinking.toggle); always available, so always consumed.
     if (matchesKey(data, 'ctrl+t')) {
-      if (options.onToggleReasoning === undefined) return
-      options.onToggleReasoning()
+      transcript.toggleThinkingHidden()
       return { consume: true }
     }
     if (data === '\x04') {

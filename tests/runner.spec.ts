@@ -1127,33 +1127,12 @@ describe('tui runner', () => {
     await test.ctx.fiber.dispose()
   })
 
-  it('toggles reasoning on and off with Ctrl+T, using the first level without a default', async () => {
-    const test = await bench({
-      startup: {},
-      reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] },
-    })
-    const running = test.run()
-    await running.mounted
-    // Off -> on: no default effort, so the first offered level is selected.
-    test.press('\x14')
-    await waitFor(() => modelSegment() === 'test-model (Low)', 'reasoning on')
-    // On -> off: clears the effort back to the provider default.
-    test.press('\x14')
-    await waitFor(() => modelSegment() === 'test-model', 'reasoning off')
-    test.submit('/exit')
-    expect(await running.code).toBe(0)
-    await test.ctx.fiber.dispose()
-  })
-
-  it('notes when the model exposes no reasoning levels and leaves the selection unchanged', async () => {
+  it('notes when the model exposes no reasoning levels on Shift+Tab and leaves the selection unchanged', async () => {
     const test = await bench({ startup: {} })
     const running = test.run()
     await running.mounted
     test.press('\x1b[Z')
     await waitFor(() => test.transcriptText().includes('no reasoning levels for this model'), 'the cycle note')
-    expect(modelSegment()).toBe('test-model')
-    test.press('\x14')
-    await waitFor(() => test.transcriptText().includes('no reasoning levels for this model'), 'the toggle note')
     expect(modelSegment()).toBe('test-model')
     test.submit('/exit')
     expect(await running.code).toBe(0)

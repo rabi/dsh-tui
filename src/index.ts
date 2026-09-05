@@ -119,18 +119,15 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
   // The model's context window, when the adapter reports one; the status line
   // falls back to used tokens alone when resolution fails (offline adapter).
   let contextWindow: number | undefined
-  // The selected model's reasoning levels (adapter display order) plus its
-  // default effort; undefined when the model exposes none or resolution failed.
-  let reasoningInfo: { efforts: Array<{ id: string; name: string }>; defaultEffort?: string } | undefined
+  // The selected model's reasoning levels (adapter display order); undefined
+  // when the model exposes none or resolution failed.
+  let reasoningInfo: { efforts: Array<{ id: string; name: string }> } | undefined
   const llm = ctx.get('llm')
   const skills = ctx.get('skills')
   const describeReasoning = (info: LlmResolvedModelInfo): typeof reasoningInfo => {
     const efforts = (info.reasoning?.efforts ?? []).map(effort => ({ id: String(effort.id), name: effort.name }))
     if (efforts.length === 0) return undefined
-    return {
-      efforts,
-      ...(info.reasoning?.defaultEffort === undefined ? {} : { defaultEffort: String(info.reasoning.defaultEffort) }),
-    }
+    return { efforts }
   }
   const refreshWindow = async (next: ModelSelection): Promise<void> => {
     if (llm === undefined) {
@@ -149,15 +146,15 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     }
   }
   await refreshWindow(selection)
-  // Shift+Tab / Ctrl+T mutate the live selection's reasoning effort and record
-  // it as a model/selection event, so the same path that serves /model updates
-  // the status line and transcript note. The change lands on the next step.
-  const applyReasoningChange = (effortId: string | undefined): void => {
+  // Shift+Tab mutates the live selection's reasoning effort and records it as a
+  // model/selection event, so the same path that serves /model updates the
+  // status line and transcript note. The change lands on the next step.
+  const applyReasoningChange = (effortId: string): void => {
     const current = currentSelection
     const next: ModelSelection = {
       provider: current.provider,
       model: current.model,
-      ...(effortId === undefined ? {} : { reasoningEffort: ReasoningEffortId(effortId) }),
+      reasoningEffort: ReasoningEffortId(effortId),
     }
     currentSelection = next
     selectionRef.current = next
@@ -181,19 +178,6 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     const next = efforts[start]
     if (next === undefined) { tui.addNote('no reasoning levels for this model'); return }
     applyReasoningChange(next.id)
-  }
-  const toggleReasoning = async (): Promise<void> => {
-    const info = await ensureReasoningInfo()
-    const efforts = info?.efforts ?? []
-    const defaultEffort = info?.defaultEffort
-    const current = currentSelection.reasoningEffort
-    const active = current !== undefined && efforts.some(effort => effort.id === String(current))
-    if (active) { applyReasoningChange(undefined); return }
-    // Turning on prefers the adapter's default level, else the first offered;
-    // an empty list leaves `first` undefined, which notes below.
-    const first = efforts[0]
-    if (first === undefined) { tui.addNote('no reasoning levels for this model'); return }
-    applyReasoningChange(defaultEffort ?? first.id)
   }
   let contextUsed = 0
   // Cumulative tokens across every model call this session; the status line's
@@ -430,7 +414,8 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
       if (text === '/help') {
         tui.addNote('commands: /help · /clear · /compact · /model · /reload · /feedback · /goal · /exit · /<skill>')
-        tui.addNote('keys: ⏎ send · shift+⏎ newline · tab complete · ^o tools · esc/^c cancel · alt+↑ dequeue · ^t/shift+tab think · ^c/^d quit')
+        tui.addNote('keys: ⏎ send · shift+⏎ newline · tab complete · ^o tools · esc/^c cancel · alt+↑ dequeue')
+        tui.addNote('       ^t think · shift+tab level · ^c/^d quit')
         return
       }
       if (text.startsWith('/')) {
@@ -457,7 +442,6 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       return { level, available }
     },
     onCycleReasoning: (): void => { void cycleReasoning() },
-    onToggleReasoning: (): void => { void toggleReasoning() },
   })
 
   // One event application shared by history replay and the live log.

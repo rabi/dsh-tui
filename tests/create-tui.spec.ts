@@ -206,48 +206,61 @@ describe('createTui', () => {
     expect(line()).toContain('⏎ send')
   })
 
-  it('cycles reasoning on Shift+Tab and toggles on Ctrl+T, consuming both', () => {
+  it('cycles reasoning on Shift+Tab, consuming it', () => {
     const cycles: string[] = []
-    const toggles: string[] = []
-    const test = mount({
-      onCycleReasoning: () => { cycles.push('cycle') },
-      onToggleReasoning: () => { toggles.push('toggle') },
-    })
+    const test = mount({ onCycleReasoning: () => { cycles.push('cycle') } })
     const key = test.screen.listeners[0]
     if (key === undefined) throw new Error('no key listener')
     expect(key('\x1b[Z')).toEqual({ consume: true })
     expect(cycles).toEqual(['cycle'])
-    expect(key('\x14')).toEqual({ consume: true })
-    expect(toggles).toEqual(['toggle'])
   })
 
-  it('lets Shift+Tab and Ctrl+T pass through when the runner did not wire them', () => {
+  it('lets Shift+Tab pass through when the runner did not wire it', () => {
     const test = mount()
     const key = test.screen.listeners[0]
     if (key === undefined) throw new Error('no key listener')
     expect(key('\x1b[Z')).toBeUndefined()
-    expect(key('\x14')).toBeUndefined()
   })
 
-  it('shows the active reasoning level and think hint in the status line', () => {
+  it('hides and shows thinking blocks on Ctrl+T, consuming it', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    test.handle.addAssistant('answer', 'a long thought')
+    const shown = stripAnsi(test.transcript.render(80).join('\n'))
+    expect(shown).toContain('a long thought')
+    expect(key('\x14')).toEqual({ consume: true })
+    const hidden = stripAnsi(test.transcript.render(80).join('\n'))
+    expect(hidden).toContain('Thinking...')
+    expect(hidden).not.toContain('a long thought')
+    expect(key('\x14')).toEqual({ consume: true })
+    const reshown = stripAnsi(test.transcript.render(80).join('\n'))
+    expect(reshown).toContain('a long thought')
+    expect(reshown).not.toContain('Thinking...')
+  })
+
+  it('shows the active reasoning level and think hints in the status line', () => {
     const test = mount({ reasoning: () => ({ level: 'High', available: true }) })
     const line = (): string => stripAnsi(test.status.render(200)[0] ?? '')
     expect(line()).toContain('test-model (High)')
-    expect(line()).toContain('^t/shift+tab think')
+    expect(line()).toContain('^t think')
+    expect(line()).toContain('shift+tab level')
   })
 
-  it('hides the reasoning level when off but keeps the hint while levels exist', () => {
+  it('hides the reasoning level when off but keeps the hints while levels exist', () => {
     const test = mount({ reasoning: () => ({ level: undefined, available: true }) })
     const line = (): string => stripAnsi(test.status.render(200)[0] ?? '')
     expect(line()).not.toContain('(High)')
     expect(line()).toContain('test-model')
-    expect(line()).toContain('^t/shift+tab think')
+    expect(line()).toContain('^t think')
+    expect(line()).toContain('shift+tab level')
   })
 
-  it('hides the think hint when the model exposes no reasoning levels', () => {
+  it('keeps the think toggle hint but drops the level hint when the model exposes no levels', () => {
     const test = mount({ reasoning: () => ({ level: undefined, available: false }) })
     const line = (): string => stripAnsi(test.status.render(200)[0] ?? '')
-    expect(line()).not.toContain('think')
+    expect(line()).toContain('^t think')
+    expect(line()).not.toContain('shift+tab')
     expect(line()).toContain('test-model')
   })
 
