@@ -19,6 +19,7 @@ Keys:
 | `Escape` | cancel the active turn (like `Ctrl+C` while running) |
 | `Ctrl+C` | cancel the active turn; quit when idle |
 | `Alt+Up` | pull queued follow-ups back into the editor |
+| `Ctrl+O` | toggle full tool output (arguments and results) |
 | `Ctrl+D` | quit |
 | `/exit`, `/quit` | quit |
 | `/help` | show the command and key reference |

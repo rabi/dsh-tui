@@ -65,6 +65,8 @@ const EDITOR_THEME = {
 const PADX = 1
 /** Max source lines shown in one diff item before the overflow note. */
 const DIFF_MAX_LINES = 40
+/** Cap on stored tool-result text so a huge output cannot bloat the frame cache. */
+const TOOL_TEXT_MAX = 100_000
 
 /** One source line of a diff, colored by side. */
 interface DiffLine {
@@ -126,6 +128,8 @@ export class Transcript implements Component {
   private readonly onChange: () => void
   private lastWidth = -1
   private lastLines: string[] = []
+  /** Whether tool calls/results render their full text (Ctrl+O). */
+  private toolsExpanded = false
 
   constructor(onChange?: () => void) {
     this.onChange = onChange ?? (() => {})
@@ -135,6 +139,13 @@ export class Transcript implements Component {
   private change(): void {
     this.lastWidth = -1
     this.onChange()
+  }
+
+  /** Flip the tool-output expansion mode; every item re-renders. */
+  toggleToolsExpanded(): void {
+    this.toolsExpanded = !this.toolsExpanded
+    for (const item of this.items) item.invalidate()
+    this.change()
   }
 
   /** Render one committed user prompt. */
@@ -211,16 +222,35 @@ export class Transcript implements Component {
     }))
   }
 
-  /** Render one committed tool call. */
+  /** Render one committed tool call; expanded shows the full argument JSON. */
   addToolCall(name: string, args: string): void {
-    const label = args === '{}' || args === '' ? name : `${name}(${truncateToWidth(args, 120)})`
-    this.push(cachedItem(width => pad(wrapTextWithAnsi(S.dim(`⚙ ${label}`), width - PADX * 2))))
+    const hasArgs = args !== '{}' && args !== ''
+    this.push(cachedItem((width) => {
+      const inner = width - PADX * 2
+      if (!this.toolsExpanded || !hasArgs) {
+        const label = hasArgs ? `${name}(${truncateToWidth(args, 120)})` : name
+        return pad(wrapTextWithAnsi(S.dim(`⚙ ${label}`), inner))
+      }
+      return pad([S.dim(`⚙ ${name}`), ...wrapTextWithAnsi(S.dim(args), inner)])
+    }))
   }
 
-  /** Render one completed tool result. */
-  addToolResult(isError: boolean, preview: string): void {
+  /** Render one completed tool result; expanded shows the full output text. */
+  addToolResult(isError: boolean, text: string): void {
     const mark = isError ? S.red('✗') : S.green('✓')
-    this.push(cachedItem(width => pad(wrapTextWithAnsi(`${mark} ${S.dim(preview)}`, width - PADX * 2))))
+    const capped = text.length > TOOL_TEXT_MAX
+      ? `${text.slice(0, TOOL_TEXT_MAX)}\n… [truncated ${String(text.length - TOOL_TEXT_MAX)} chars]`
+      : text
+    this.push(cachedItem((width) => {
+      const inner = width - PADX * 2
+      if (!this.toolsExpanded) {
+        const flat = capped.replace(/\s+/gu, ' ').trim()
+        const preview = flat === '' ? '(no output)' : truncateToWidth(flat, inner - 2, '…', false)
+        return pad(wrapTextWithAnsi(`${mark} ${S.dim(preview)}`, inner))
+      }
+      const body = capped === '' ? '(no output)' : capped
+      return pad([mark, ...wrapTextWithAnsi(S.dim(body), inner)])
+    }))
   }
 
   /** Render one dim informational note (header, separators). */
@@ -433,7 +463,7 @@ export function createTui(options: TuiOptions): TuiHandle {
       ? formatTokens(usage.used)
       : `${formatTokens(usage.used)}/${formatTokens(usage.window)}`
     const branch = git?.branch()
-    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ⏎ send · esc/^c cancel · ^c quit · /exit`
+    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ⏎ send · ^o tools · esc/^c cancel · ^c quit · /exit`
   })
   let timer: ReturnType<typeof setInterval> | undefined
   /** Advance the frame and repaint while a turn runs; settle the line when it ends. */
@@ -506,6 +536,11 @@ export function createTui(options: TuiOptions): TuiHandle {
         return { consume: true }
       }
       return
+    }
+    // Ctrl+O toggles full tool output (pi's app.tools.expand).
+    if (data === '\x0f') {
+      transcript.toggleToolsExpanded()
+      return { consume: true }
     }
     if (data === '\x04') {
       options.onExit()

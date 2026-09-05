@@ -281,7 +281,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
       if (text === '/help') {
         tui.addNote('commands: /help · /clear · /compact · /model · /reload · /feedback · /goal · /exit · /<skill>')
-        tui.addNote('keys: ⏎ send · shift+⏎ newline · esc/^c cancel · alt+↑ dequeue · ^c/^d quit')
+        tui.addNote('keys: ⏎ send · shift+⏎ newline · ^o tools · esc/^c cancel · alt+↑ dequeue · ^c/^d quit')
         return
       }
       if (text.startsWith('/')) {
@@ -362,7 +362,9 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
         }
         if (pending !== undefined && !rendered) tui.addToolCall(pending.name, pending.arguments)
         pendingCalls.delete(block.toolCallId)
-        tui.addToolResult(isError, previewOf(block.content))
+        // Full text: the TUI flattens/truncates the collapsed line and keeps
+        // the newlines for the Ctrl+O expanded view.
+        tui.addToolResult(isError, joinText(block.content))
         return
       }
       case 'turn/end':
@@ -480,13 +482,4 @@ function diffOfToolCall(name: 'edit' | 'write', argumentsJson: string): { title:
   const added = record.content
   if (typeof added !== 'string') return undefined
   return { title: `write ${path}`, removed: null, added }
-}
-
-function previewOf(content: readonly ContentBlock[]): string {
-  const text = joinText(content).replace(/\s+/g, ' ').trim()
-  return text === '' ? '(no output)' : truncate(text, 200)
-}
-
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
