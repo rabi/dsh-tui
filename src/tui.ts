@@ -17,6 +17,7 @@ import {
   wrapTextWithAnsi,
   type Component,
 } from '@earendil-works/pi-tui'
+import { createGitStatus } from './git.ts'
 
 /** One-line ANSI style helpers for the fixed dark-on-light terminal palette. */
 const S = {
@@ -348,6 +349,8 @@ export interface TuiOptions {
   onCancel: () => void
   /** Quit request (Ctrl+C idle, Ctrl+D, /exit). */
   onExit: () => void
+  /** Directory inside a git repository for the status line's branch segment; omit to hide it. */
+  gitCwd?: string
 }
 
 /** The mounted TUI surface and its transcript API. */
@@ -396,6 +399,7 @@ function formatTokens(count: number): string {
 export function createTui(options: TuiOptions): TuiHandle {
   const tui = new TuiMainScreen(new ProcessTerminal(), true)
   const transcript = new Transcript((): void => { tui.requestRender() })
+  const git = options.gitCwd === undefined ? undefined : createGitStatus(options.gitCwd, (): void => { tui.requestRender() })
   let approvalText = ''
   const approvalLine = new StatusLine(() => approvalText)
   let spin = 0
@@ -407,7 +411,8 @@ export function createTui(options: TuiOptions): TuiHandle {
     const ctxText = usage.window === undefined
       ? formatTokens(usage.used)
       : `${formatTokens(usage.used)}/${formatTokens(usage.window)}`
-    return `${prefix}${options.model} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ⏎ send · ^c cancel/quit · /exit`
+    const branch = git?.branch()
+    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx · ⏎ send · ^c cancel/quit · /exit`
   })
   let timer: ReturnType<typeof setInterval> | undefined
   /** Advance the frame and repaint while a turn runs; settle the line when it ends. */
@@ -468,6 +473,7 @@ export function createTui(options: TuiOptions): TuiHandle {
         clearInterval(timer)
         timer = undefined
       }
+      git?.dispose()
       tui.stop()
     },
     addUser: (text: string): void => { transcript.addUser(text) },

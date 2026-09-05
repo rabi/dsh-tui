@@ -265,6 +265,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
   const tui = createTui({
     model: selection.model,
     sessionId: agent.id,
+    gitCwd: process.cwd(),
     isRunning: () => agent.status === 'running',
     context: () => contextWindow === undefined
       ? { used: contextUsed }

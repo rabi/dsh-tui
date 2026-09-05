@@ -1,5 +1,8 @@
 /** createTui composition over mocked terminal classes with the real text engine. */
 
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Component } from '@earendil-works/pi-tui'
 import { createTui } from '../src/tui.ts'
@@ -243,5 +246,39 @@ describe('createTui', () => {
     answerer('y')
     await expect(promise).resolves.toBe('allowed-once')
     expect(stripAnsi(test.approvalLine.render(80)[0] ?? '')).toBe('')
+  })
+
+  describe('git branch segment', () => {
+    let repo: string | undefined
+
+    afterEach(async () => {
+      if (repo !== undefined) await rm(repo, { recursive: true, force: true })
+      repo = undefined
+    })
+
+    async function makeRepo(head: string): Promise<string> {
+      const dir = await mkdtemp(join(tmpdir(), 'dsh-tui-branch-'))
+      repo = dir
+      await mkdir(join(dir, '.git'))
+      await writeFile(join(dir, '.git', 'HEAD'), head)
+      return dir
+    }
+
+    it('shows the branch and hides the segment without gitCwd', async () => {
+      const plain = mount()
+      expect(stripAnsi(plain.status.render(200)[0] ?? '')).not.toContain('⎇')
+      const dir = await makeRepo('ref: refs/heads/feature/x\n')
+      const test = mount({ gitCwd: dir })
+      expect(stripAnsi(test.status.render(200)[0] ?? '')).toContain('test-model ⎇ feature/x ·')
+      test.handle.stop()
+    })
+
+    it('shows a short SHA for a detached HEAD', async () => {
+      const sha = 'a'.repeat(40)
+      const dir = await makeRepo(`${sha}\n`)
+      const test = mount({ gitCwd: dir })
+      expect(stripAnsi(test.status.render(200)[0] ?? '')).toContain(`⎇ ${sha.slice(0, 7)}`)
+      test.handle.stop()
+    })
   })
 })
