@@ -477,7 +477,7 @@ const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 /** Spinner cadence in milliseconds. */
 const SPIN_MS = 100
 
-/** Context consumption shown in the status line. */
+/** Context consumption and session throughput shown in the status line. */
 export interface ContextUsage {
   /** Tokens occupying the conversation context after the last model call. */
   used: number
@@ -485,12 +485,21 @@ export interface ContextUsage {
   window?: number
   /** Cumulative tokens across every model call this session (shown when > 0). */
   total?: number
+  /** Session-wide output tokens per second of generation time (shown once a call completes). */
+  tokensPerSec?: number
+  /** Session-wide share of prompt tokens served from cache, 0–100 (shown when any input was seen). */
+  cachePercent?: number
 }
 
 /** Compact token count for the status line (1234 -> 1.2k). */
 function formatTokens(count: number): string {
   if (count < 1000) return String(count)
   return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}k`
+}
+
+/** Tokens-per-second for the status line: whole above 10, one decimal below. */
+function formatTps(tps: number): string {
+  return tps >= 10 ? String(Math.round(tps)) : tps.toFixed(1)
 }
 
 /**
@@ -543,13 +552,17 @@ export function createTui(options: TuiOptions): TuiHandle {
     // The session total is cumulative consumption, distinct from the current
     // context fill; it appears only once the session has spent tokens.
     const totalText = usage.total !== undefined && usage.total > 0 ? ` · Σ ${formatTokens(usage.total)}` : ''
+    // Throughput and cache hit rate are session-wide; each appears only once
+    // there is data (a completed call / any prompt tokens) to compute it from.
+    const tpsText = usage.tokensPerSec !== undefined ? ` · ${formatTps(usage.tokensPerSec)} t/s` : ''
+    const cacheText = usage.cachePercent !== undefined ? ` · ${String(Math.round(usage.cachePercent))}% cache` : ''
     const branch = git?.branch()
     // Hints follow the state: while a turn runs, cancelling (and pulling
     // queued follow-ups back) is what matters; idle, the input shortcuts.
     const hints = running
       ? ['esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
       : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^c/^d quit']
-    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText} · ${hints.join(' · ')}`
+    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText}${tpsText}${cacheText} · ${hints.join(' · ')}`
   })
   let timer: ReturnType<typeof setInterval> | undefined
   /** Advance the frame and repaint while a turn runs; settle the line when it ends. */

@@ -28,7 +28,7 @@ import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-commands'
-import { createTui, type AssistantDraft, type NoteDraft } from './tui.ts'
+import { createTui, type AssistantDraft, type ContextUsage, type NoteDraft } from './tui.ts'
 import type { TuiStartupValues } from './startup.ts'
 
 // The session-controller, dsh-compaction, and dsh-llm-retry packages own these
@@ -138,6 +138,14 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
   // Cumulative tokens across every model call this session; the status line's
   // `used` is only the last call, so the total is tracked separately.
   let sessionTotal = 0
+  // Session-wide throughput and cache stats, folded from the same replayed
+  // events: output tokens over generation time give tok/s; the disjoint
+  // input (cache-miss) and cache-read counts give the cache hit rate.
+  let sessionOutput = 0
+  let sessionInput = 0
+  let sessionCacheRead = 0
+  let sessionGenMs = 0
+  let lastStepStartMs: number | undefined
 
   // Slash commands route through the dsh-base command runtime; a settled
   // command renders through its command/done session event, so this surface
@@ -338,8 +346,17 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     },
     isRunning: () => agent.status === 'running',
     context: () => {
-      const base = { used: contextUsed, total: sessionTotal }
-      return contextWindow === undefined ? base : { ...base, window: contextWindow }
+      const usage: ContextUsage = { used: contextUsed, total: sessionTotal }
+      if (contextWindow !== undefined) usage.window = contextWindow
+      // tok/s is output tokens over generation time (tool work excluded); it
+      // appears only once a call has completed. Cache % is the share of prompt
+      // tokens served from cache (input and cache-read are disjoint counts); it
+      // appears only once cache reads are actually observed, so a 0% rate is not
+      // mistaken for "no caching data".
+      const genSec = sessionGenMs / 1000
+      if (genSec > 0) usage.tokensPerSec = sessionOutput / genSec
+      if (sessionCacheRead > 0) usage.cachePercent = (sessionCacheRead / (sessionInput + sessionCacheRead)) * 100
+      return usage
     },
     onSubmit: (text: string): void => {
       if (text === '/exit' || text === '/quit') {
@@ -393,6 +410,12 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
         if (text !== '') tui.addUser(text)
         return
       }
+      case 'step/start':
+        // Marks the start of a model call; the following assistant/message's
+        // elapsed time since here is that call's generation time (tool work
+        // happens after the message, so it is excluded from tok/s).
+        lastStepStartMs = event.time
+        return
       case 'assistant/chunk': {
         const chunk = event.data.chunk
         if (chunk.type === 'text-delta') (draft ??= tui.beginAssistant()).textDelta(chunk.text)
@@ -405,6 +428,10 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
           const callTokens = usage.totalTokens ?? usage.inputTokens + usage.outputTokens
           contextUsed = callTokens
           sessionTotal += callTokens
+          sessionOutput += usage.outputTokens
+          sessionInput += usage.inputTokens
+          sessionCacheRead += usage.cacheReadTokens ?? 0
+          if (lastStepStartMs !== undefined) sessionGenMs += Math.max(0, event.time - lastStepStartMs)
         }
         const { text, reasoning } = splitAssistant(event.data.message.content)
         if (draft !== undefined) {

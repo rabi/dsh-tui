@@ -457,6 +457,21 @@ describe('createTui', () => {
     expect(text).toContain('12.3k/164k ctx · Σ 45.2k')
   })
 
+  it('shows session tok/s and cache % only once there is data to compute them', () => {
+    const line = (test: ReturnType<typeof mount>): string => stripAnsi(test.status.render(200)[0] ?? '')
+    // No throughput or cache data: neither segment appears.
+    expect(line(mount())).not.toContain('t/s')
+    expect(line(mount())).not.toContain('% cache')
+    // Both present: rendered after the Σ segment.
+    const withStats = mount({ context: () => ({ used: 12_345, window: 164_000, total: 45_200, tokensPerSec: 128.4, cachePercent: 66.4 }) })
+    expect(line(withStats)).toContain('Σ 45.2k · 128 t/s · 66% cache')
+    // Low throughput keeps one decimal; whole at/above ten rounds.
+    expect(line(mount({ context: () => ({ used: 10, total: 10, tokensPerSec: 5.2 }) }))).toContain('5.2 t/s')
+    expect(line(mount({ context: () => ({ used: 10, total: 10, tokensPerSec: 9.9 }) }))).toContain('9.9 t/s')
+    // Cache % alone (no throughput) still renders.
+    expect(line(mount({ context: () => ({ used: 10, total: 10, cachePercent: 100 }) }))).toContain('100% cache')
+  })
+
   it('asks approval through the mounted gate and settles once on double answer', async () => {
     const test = mount()
     const promise = test.handle.askApproval('run bash')

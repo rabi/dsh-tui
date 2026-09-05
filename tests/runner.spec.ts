@@ -660,39 +660,101 @@ describe('tui runner', () => {
   })
 
   it('accumulates the session token total across model calls in the status line', async () => {
-    const test = await bench({
-      startup: { resumeSessionId: 'session-tokens' },
-      resumeHistory(session) {
-        // Two calls with distinct usage; the total is their sum, not the last.
-        for (const [turn, input, output] of [[0, 1000, 500], [1, 2000, 1000]] as const) {
-          session.append('turn/start', { turn })
-          session.append('step/start', { turn, step: 1 })
-          session.append('user/message', userMsg(`question ${String(turn)}`), { surfaceOp: 'append' })
+    // Pin the clock so back-to-back appends share one timestamp: no generation
+    // time elapses, so only the token total (not tok/s) is asserted here.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    try {
+      const test = await bench({
+        startup: { resumeSessionId: 'session-tokens' },
+        resumeHistory(session) {
+          // Two calls with distinct usage; the total is their sum, not the last.
+          for (const [turn, input, output] of [[0, 1000, 500], [1, 2000, 1000]] as const) {
+            session.append('turn/start', { turn })
+            session.append('step/start', { turn, step: 1 })
+            session.append('user/message', userMsg(`question ${String(turn)}`), { surfaceOp: 'append' })
+            session.append('assistant/message', {
+              turn,
+              step: 1,
+              usage: { inputTokens: input, outputTokens: output },
+              message: createAssistantMessage({
+                content: [{ type: 'text', text: `answer ${String(turn)}` }],
+                source: { provider: 'test-provider', model: 'test-model' },
+              }),
+            }, { surfaceOp: 'append' })
+            session.append('step/end', { turn, step: 1 })
+            session.append('turn/end', { turn, reason: { kind: 'completed' } })
+          }
+        },
+      })
+      const running = test.run()
+      await running.mounted
+      const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
+      if (status === undefined) throw new Error('status line not mounted')
+      const line = status.render(200)[0] ?? ''
+      // Last call's usage fills the context; the cumulative total is both calls.
+      expect(line).toContain('3k/164k ctx')
+      expect(line).toContain('Σ 4.5k')
+      test.submit('/exit')
+      expect(await running.code).toBe(0)
+      await test.ctx.fiber.dispose()
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('computes session tok/s and cache % from the replayed log', async () => {
+    let now = 1_000_000
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      const test = await bench({
+        startup: { resumeSessionId: 'session-throughput' },
+        resumeHistory(session) {
+          // A message with no preceding step/start has unknown generation time
+          // and no cacheReadTokens: it adds tokens but no throughput time, and
+          // exercises the cache-read fallback.
+          now = 1_000_000
           session.append('assistant/message', {
-            turn,
+            turn: 0,
             step: 1,
-            usage: { inputTokens: input, outputTokens: output },
+            usage: { inputTokens: 100, outputTokens: 50 },
             message: createAssistantMessage({
-              content: [{ type: 'text', text: `answer ${String(turn)}` }],
+              content: [{ type: 'text', text: 'a' }],
               source: { provider: 'test-provider', model: 'test-model' },
             }),
           }, { surfaceOp: 'append' })
-          session.append('step/end', { turn, step: 1 })
-          session.append('turn/end', { turn, reason: { kind: 'completed' } })
-        }
-      },
-    })
-    const running = test.run()
-    await running.mounted
-    const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
-    if (status === undefined) throw new Error('status line not mounted')
-    const line = status.render(200)[0] ?? ''
-    // Last call's usage fills the context; the cumulative total is both calls.
-    expect(line).toContain('3k/164k ctx')
-    expect(line).toContain('Σ 4.5k')
-    test.submit('/exit')
-    expect(await running.code).toBe(0)
-    await test.ctx.fiber.dispose()
+          // A bracketed call with a 2s generation gap and cache reads makes
+          // both metrics computable.
+          now = 2_000_000
+          session.append('step/start', { turn: 1, step: 1 })
+          now = 2_002_000
+          session.append('assistant/message', {
+            turn: 1,
+            step: 1,
+            usage: { inputTokens: 400, outputTokens: 200, cacheReadTokens: 600 },
+            message: createAssistantMessage({
+              content: [{ type: 'text', text: 'b' }],
+              source: { provider: 'test-provider', model: 'test-model' },
+            }),
+          }, { surfaceOp: 'append' })
+          now = 2_002_000
+          session.append('step/end', { turn: 1, step: 1 })
+        },
+      })
+      const running = test.run()
+      await running.mounted
+      const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
+      if (status === undefined) throw new Error('status line not mounted')
+      const line = status.render(200)[0] ?? ''
+      // Output 50 + 200 = 250 over 2s of measured generation -> 125 t/s.
+      expect(line).toContain('125 t/s')
+      // Cache reads 600 of 100 + 400 + 600 prompt tokens -> 55% (rounded).
+      expect(line).toContain('55% cache')
+      test.submit('/exit')
+      expect(await running.code).toBe(0)
+      await test.ctx.fiber.dispose()
+    } finally {
+      nowSpy.mockRestore()
+    }
   })
 
   it('renders persisted diff metadata from tool results, with argument fallback and failure notes', async () => {
