@@ -5,7 +5,7 @@
  * is differential-rendered at the bottom of the viewport. Pure presentation:
  * this module owns no agent, session, or Cordis state.
  *
- * @module @deepseek-ai/dsh-tui/tui
+ * @module @rabi/dsh-tui/tui
  */
 
 import {

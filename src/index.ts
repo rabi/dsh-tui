@@ -1,10 +1,10 @@
 /**
- * @deepseek-ai/dsh-tui — interactive terminal surface. The bundle patch rides
+ * @rabi/dsh-tui — interactive terminal surface. The bundle patch rides
  * over dsh-base; this runner creates (or resumes) one Agent through the core
  * registry, mounts the pi-style TUI over its session log, answers approval
  * requests in-terminal, and exits through the launcher's bounded exit request.
  *
- * @module @deepseek-ai/dsh-tui
+ * @module @rabi/dsh-tui
  */
 
 import { randomUUID } from 'node:crypto'

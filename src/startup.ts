@@ -4,7 +4,7 @@
  * row injects that service, so the interactive surface mounts only for a real
  * invocation (never on `--help`).
  *
- * @module @deepseek-ai/dsh-tui/startup
+ * @module @rabi/dsh-tui/startup
  */
 
 import { Command } from 'commander'

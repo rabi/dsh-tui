@@ -1,5 +1,5 @@
 {
-  "name": "@deepseek-ai/dsh-tui",
+  "name": "@rabi/dsh-tui",
   "description": "The dsh terminal-surface bundle: a pi-style interactive TUI over dsh-base (transcript, editor, status line, in-terminal approvals)",
   "version": "0.1.0",
   "private": true,

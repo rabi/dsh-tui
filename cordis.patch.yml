@@ -12,9 +12,9 @@
 
 - insert:
     - id: tui-startup
-      name: '@deepseek-ai/dsh-tui/startup'
+      name: '@rabi/dsh-tui/startup'
 
     # Reads its startup values from the ordinary tuiStartup provider.
     - id: tui-runner
-      name: '@deepseek-ai/dsh-tui'
+      name: '@rabi/dsh-tui'
       inject: [tuiStartup]

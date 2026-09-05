@@ -1,4 +1,4 @@
-# @deepseek-ai/dsh-tui
+# @rabi/dsh-tui
 
 The `dsh` terminal-surface bundle: a pi-style interactive TUI over the `dsh-base` layer. One process, one agent, one session — the transcript flows into terminal scrollback while the live tail (streaming assistant text, input editor, status line) is differential-rendered at the bottom of the viewport.
 
@@ -33,11 +33,11 @@ The bundle is a patch layer over `@deepseek-ai/dsh-base`. A profile depends on t
 ```json
 {
   "dependencies": {
-    "@deepseek-ai/dsh-tui": "github:rabi/dsh-tui"
+    "@rabi/dsh-tui": "github:rabi/dsh-tui"
   },
   "dsh": {
     "profile": {
-      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-tui"]
+      "bundles": ["@deepseek-ai/dsh-base", "@rabi/dsh-tui"]
     }
   }
 }
