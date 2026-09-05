@@ -16,8 +16,8 @@ import type { CommandDescriptor, CommandResult } from '@deepseek-ai/dsh-commands
 import type { SlashCommand } from '@earendil-works/pi-tui'
 import type { SkillSummary } from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 // Empty type imports carry the loader Context merge for the settlement await,
@@ -119,32 +119,93 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
   // The model's context window, when the adapter reports one; the status line
   // falls back to used tokens alone when resolution fails (offline adapter).
   let contextWindow: number | undefined
+  // The selected model's reasoning levels (adapter display order) plus its
+  // default effort; undefined when the model exposes none or resolution failed.
+  let reasoningInfo: { efforts: Array<{ id: string; name: string }>; defaultEffort?: string } | undefined
   const llm = ctx.get('llm')
   const skills = ctx.get('skills')
+  const describeReasoning = (info: LlmResolvedModelInfo): typeof reasoningInfo => {
+    const efforts = (info.reasoning?.efforts ?? []).map(effort => ({ id: String(effort.id), name: effort.name }))
+    if (efforts.length === 0) return undefined
+    return {
+      efforts,
+      ...(info.reasoning?.defaultEffort === undefined ? {} : { defaultEffort: String(info.reasoning.defaultEffort) }),
+    }
+  }
   const refreshWindow = async (next: ModelSelection): Promise<void> => {
     if (llm === undefined) {
       contextWindow = undefined
+      reasoningInfo = undefined
       return
     }
     try {
-      contextWindow = (await llm.resolveModelInfo(next.provider, next.model)).context?.contextWindow
+      const info = await llm.resolveModelInfo(next.provider, next.model)
+      contextWindow = info.context?.contextWindow
+      reasoningInfo = describeReasoning(info)
     } catch {
       // Swallows adapter/model-info failures only; usage tracking still works.
       contextWindow = undefined
+      reasoningInfo = undefined
     }
   }
   await refreshWindow(selection)
+  // Shift+Tab / Ctrl+T mutate the live selection's reasoning effort and record
+  // it as a model/selection event, so the same path that serves /model updates
+  // the status line and transcript note. The change lands on the next step.
+  const applyReasoningChange = (effortId: string | undefined): void => {
+    const current = currentSelection
+    const next: ModelSelection = {
+      provider: current.provider,
+      model: current.model,
+      ...(effortId === undefined ? {} : { reasoningEffort: ReasoningEffortId(effortId) }),
+    }
+    currentSelection = next
+    selectionRef.current = next
+    agent.session.append('model/selection', next)
+  }
+  // Resolve the model's levels once and cache them; a keypress reuses the cache
+  // so cycling does not re-query the adapter on every press.
+  const ensureReasoningInfo = async (): Promise<typeof reasoningInfo> => {
+    if (reasoningInfo !== undefined) return reasoningInfo
+    await refreshWindow(currentSelection)
+    return reasoningInfo
+  }
+  const cycleReasoning = async (): Promise<void> => {
+    const info = await ensureReasoningInfo()
+    const efforts = info?.efforts ?? []
+    // Advance to the next level, wrapping around; with none active, start at the
+    // first. An empty level list leaves `next` undefined, which notes below.
+    const current = currentSelection.reasoningEffort
+    const position = current === undefined ? -1 : efforts.findIndex(effort => effort.id === String(current))
+    const start = (position + 1) % Math.max(1, efforts.length)
+    const next = efforts[start]
+    if (next === undefined) { tui.addNote('no reasoning levels for this model'); return }
+    applyReasoningChange(next.id)
+  }
+  const toggleReasoning = async (): Promise<void> => {
+    const info = await ensureReasoningInfo()
+    const efforts = info?.efforts ?? []
+    const defaultEffort = info?.defaultEffort
+    const current = currentSelection.reasoningEffort
+    const active = current !== undefined && efforts.some(effort => effort.id === String(current))
+    if (active) { applyReasoningChange(undefined); return }
+    // Turning on prefers the adapter's default level, else the first offered;
+    // an empty list leaves `first` undefined, which notes below.
+    const first = efforts[0]
+    if (first === undefined) { tui.addNote('no reasoning levels for this model'); return }
+    applyReasoningChange(defaultEffort ?? first.id)
+  }
   let contextUsed = 0
   // Cumulative tokens across every model call this session; the status line's
   // `used` is only the last call, so the total is tracked separately.
   let sessionTotal = 0
-  // Session-wide throughput and cache stats, folded from the same replayed
-  // events: output tokens over generation time give tok/s; the disjoint
-  // input (cache-miss) and cache-read counts give the cache hit rate.
-  let sessionOutput = 0
+  // Throughput is the most recent call's output tokens over its generation time;
+  // cache stats stay session-wide (disjoint input/cache-read counts give the hit
+  // rate). Both fold from the same replayed events.
+  let lastCallOutput = 0
+  let lastCallGenMs = 0
   let sessionInput = 0
   let sessionCacheRead = 0
-  let sessionGenMs = 0
   let lastStepStartMs: number | undefined
 
   // Slash commands route through the dsh-base command runtime; a settled
@@ -348,13 +409,13 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     context: () => {
       const usage: ContextUsage = { used: contextUsed, total: sessionTotal }
       if (contextWindow !== undefined) usage.window = contextWindow
-      // tok/s is output tokens over generation time (tool work excluded); it
-      // appears only once a call has completed. Cache % is the share of prompt
-      // tokens served from cache (input and cache-read are disjoint counts); it
-      // appears only once cache reads are actually observed, so a 0% rate is not
-      // mistaken for "no caching data".
-      const genSec = sessionGenMs / 1000
-      if (genSec > 0) usage.tokensPerSec = sessionOutput / genSec
+      // tok/s is the last call's output tokens over its generation time (tool
+      // work excluded); it appears only once a call has completed. Cache % is the
+      // share of prompt tokens served from cache (input and cache-read are
+      // disjoint counts); it appears only once cache reads are actually observed,
+      // so a 0% rate is not mistaken for "no caching data".
+      const genSec = lastCallGenMs / 1000
+      if (genSec > 0) usage.tokensPerSec = lastCallOutput / genSec
       if (sessionCacheRead > 0) usage.cachePercent = (sessionCacheRead / (sessionInput + sessionCacheRead)) * 100
       return usage
     },
@@ -369,7 +430,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
       if (text === '/help') {
         tui.addNote('commands: /help · /clear · /compact · /model · /reload · /feedback · /goal · /exit · /<skill>')
-        tui.addNote('keys: ⏎ send · shift+⏎ newline · tab complete · ^o tools · esc/^c cancel · alt+↑ dequeue · ^c/^d quit')
+        tui.addNote('keys: ⏎ send · shift+⏎ newline · tab complete · ^o tools · esc/^c cancel · alt+↑ dequeue · ^t/shift+tab think · ^c/^d quit')
         return
       }
       if (text.startsWith('/')) {
@@ -386,6 +447,17 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     // One synchronous splice removes exactly what it reports; the TUI puts
     // those texts back into the editor (the alt+Up dequeue).
     onDequeue: (): string[] => agent.inbox.splice('next-turn', 0, agent.inbox.nextTurn.length, []).map(m => joinText(m.content)),
+    // The status line shows the active level's display name (the effort id is
+    // opaque); `available` gates the think hint to models that expose levels.
+    reasoning: () => {
+      const info = reasoningInfo
+      const available = (info?.efforts.length ?? 0) > 0
+      const id = currentSelection.reasoningEffort
+      const level = id === undefined ? undefined : info?.efforts.find(effort => effort.id === String(id))?.name ?? String(id)
+      return { level, available }
+    },
+    onCycleReasoning: (): void => { void cycleReasoning() },
+    onToggleReasoning: (): void => { void toggleReasoning() },
   })
 
   // One event application shared by history replay and the live log.
@@ -428,10 +500,10 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
           const callTokens = usage.totalTokens ?? usage.inputTokens + usage.outputTokens
           contextUsed = callTokens
           sessionTotal += callTokens
-          sessionOutput += usage.outputTokens
+          lastCallOutput = usage.outputTokens
+          lastCallGenMs = lastStepStartMs === undefined ? 0 : Math.max(0, event.time - lastStepStartMs)
           sessionInput += usage.inputTokens
           sessionCacheRead += usage.cacheReadTokens ?? 0
-          if (lastStepStartMs !== undefined) sessionGenMs += Math.max(0, event.time - lastStepStartMs)
         }
         const { text, reasoning } = splitAssistant(event.data.message.content)
         if (draft !== undefined) {

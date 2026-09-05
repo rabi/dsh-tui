@@ -451,6 +451,16 @@ export interface TuiOptions {
    * editor (`$VISUAL`/`$EDITOR`/`vi`); inject a stub in tests.
    */
   editText?: (initial: string) => Promise<string | undefined>
+  /**
+   * Current reasoning-effort display name and whether the selected model exposes
+   * selectable levels. `level` is undefined when reasoning is off (provider
+   * default); `available` drives the status-line hint. Omit to hide both.
+   */
+  reasoning?: () => { level: string | undefined; available: boolean }
+  /** Cycle to the next reasoning effort (Shift+Tab). */
+  onCycleReasoning?: () => void
+  /** Toggle reasoning on/off (Ctrl+T). */
+  onToggleReasoning?: () => void
 }
 
 /** The mounted TUI surface and its transcript API. */
@@ -559,17 +569,21 @@ export function createTui(options: TuiOptions): TuiHandle {
     // The session total is cumulative consumption, distinct from the current
     // context fill; it appears only once the session has spent tokens.
     const totalText = usage.total !== undefined && usage.total > 0 ? ` · Σ ${formatTokens(usage.total)}` : ''
-    // Throughput and cache hit rate are session-wide; each appears only once
-    // there is data (a completed call / any prompt tokens) to compute it from.
+    // Throughput reflects the most recent call; the cache hit rate is
+    // session-wide. Each appears only once there is data to compute it from.
     const tpsText = usage.tokensPerSec !== undefined ? ` · ${formatTps(usage.tokensPerSec)} t/s` : ''
     const cacheText = usage.cachePercent !== undefined ? ` · ${String(Math.round(usage.cachePercent))}% cache` : ''
     const branch = git?.branch()
+    // The selected reasoning effort rides the model segment; it appears only
+    // while a level is active (off = provider default, shown bare).
+    const reasoning = options.reasoning?.()
+    const modelText = reasoning?.level === undefined ? options.model : `${options.model} (${reasoning.level})`
     // Hints follow the state: while a turn runs, cancelling (and pulling
     // queued follow-ups back) is what matters; idle, the input shortcuts.
     const hints = running
       ? ['esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
-      : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^g edit', '^c/^d quit']
-    return `${prefix}${options.model}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText}${tpsText}${cacheText} · ${hints.join(' · ')}`
+      : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^g edit', ...(reasoning?.available ? ['^t/shift+tab think'] : []), '^c/^d quit']
+    return `${prefix}${modelText}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText}${tpsText}${cacheText} · ${hints.join(' · ')}`
   })
   let timer: ReturnType<typeof setInterval> | undefined
   /** Advance the frame and repaint while a turn runs; settle the line when it ends. */
@@ -700,6 +714,18 @@ export function createTui(options: TuiOptions): TuiHandle {
     // default vi); the TUI suspends while it runs and adopts the result.
     if (data === '\x07') {
       void openExternalEditor()
+      return { consume: true }
+    }
+    // Shift+Tab cycles the reasoning effort; Ctrl+T toggles it on/off. Both are
+    // no-ops (and pass through to the editor) when the runner did not wire them.
+    if (matchesKey(data, 'shift+tab')) {
+      if (options.onCycleReasoning === undefined) return
+      options.onCycleReasoning()
+      return { consume: true }
+    }
+    if (matchesKey(data, 'ctrl+t')) {
+      if (options.onToggleReasoning === undefined) return
+      options.onToggleReasoning()
       return { consume: true }
     }
     if (data === '\x04') {

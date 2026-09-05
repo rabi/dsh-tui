@@ -206,6 +206,51 @@ describe('createTui', () => {
     expect(line()).toContain('⏎ send')
   })
 
+  it('cycles reasoning on Shift+Tab and toggles on Ctrl+T, consuming both', () => {
+    const cycles: string[] = []
+    const toggles: string[] = []
+    const test = mount({
+      onCycleReasoning: () => { cycles.push('cycle') },
+      onToggleReasoning: () => { toggles.push('toggle') },
+    })
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    expect(key('\x1b[Z')).toEqual({ consume: true })
+    expect(cycles).toEqual(['cycle'])
+    expect(key('\x14')).toEqual({ consume: true })
+    expect(toggles).toEqual(['toggle'])
+  })
+
+  it('lets Shift+Tab and Ctrl+T pass through when the runner did not wire them', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    expect(key('\x1b[Z')).toBeUndefined()
+    expect(key('\x14')).toBeUndefined()
+  })
+
+  it('shows the active reasoning level and think hint in the status line', () => {
+    const test = mount({ reasoning: () => ({ level: 'High', available: true }) })
+    const line = (): string => stripAnsi(test.status.render(200)[0] ?? '')
+    expect(line()).toContain('test-model (High)')
+    expect(line()).toContain('^t/shift+tab think')
+  })
+
+  it('hides the reasoning level when off but keeps the hint while levels exist', () => {
+    const test = mount({ reasoning: () => ({ level: undefined, available: true }) })
+    const line = (): string => stripAnsi(test.status.render(200)[0] ?? '')
+    expect(line()).not.toContain('(High)')
+    expect(line()).toContain('test-model')
+    expect(line()).toContain('^t/shift+tab think')
+  })
+
+  it('hides the think hint when the model exposes no reasoning levels', () => {
+    const test = mount({ reasoning: () => ({ level: undefined, available: false }) })
+    const line = (): string => stripAnsi(test.status.render(200)[0] ?? '')
+    expect(line()).not.toContain('think')
+    expect(line()).toContain('test-model')
+  })
+
   it('submits non-empty editor text to the runner and records history', () => {
     const test = mount()
     const submit = test.editor.onSubmit

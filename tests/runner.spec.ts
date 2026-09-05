@@ -115,6 +115,14 @@ async function waitFor(predicate: () => boolean, what: string): Promise<void> {
   }
 }
 
+/** The status line's model segment: ANSI-free, minus the git branch suffix. */
+function modelSegment(): string {
+  const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
+  if (status === undefined) throw new Error('status line not mounted')
+  const line = (status.render(200)[0] ?? '').replace(/\x1b\[[0-9;]*m/g, '')
+  return line.split(' · ')[0]?.split(' ⎇ ')[0] ?? ''
+}
+
 /** One command definition as the fake runtime stores it. */
 interface FakeCommandDefinition {
   name: string
@@ -152,6 +160,8 @@ interface BenchOptions {
   skills?: Array<{ name: string; userInvocable: boolean; description?: string }> | 'observation'
   /** Make skills.list reject. */
   failSkills?: boolean
+  /** Reasoning levels the adapter reports for the selected model; omit for none. */
+  reasoning?: { efforts: Array<{ id: string; name: string }>; defaultEffort?: string }
 }
 
 interface BenchRun {
@@ -189,7 +199,9 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
     ctx.provide('llm', {
       resolveModelInfo: async (): Promise<unknown> => {
         if (benchOptions.failLlmInfo) throw new Error('offline adapter')
-        return { context: { contextWindow: 164_000 } }
+        const base = { context: { contextWindow: 164_000 } }
+        if (benchOptions.reasoning === undefined) return base
+        return { ...base, reasoning: benchOptions.reasoning }
       },
       resolveCallConfig: async (config: { provider: string; model: string }): Promise<unknown> => {
         if (config.model === 'gone-model') throw new Error('model gone from the catalog')
@@ -745,8 +757,9 @@ describe('tui runner', () => {
       const status = captured.screens[0]?.children[4] as { render(width: number): string[] } | undefined
       if (status === undefined) throw new Error('status line not mounted')
       const line = status.render(200)[0] ?? ''
-      // Output 50 + 200 = 250 over 2s of measured generation -> 125 t/s.
-      expect(line).toContain('125 t/s')
+      // Per-call throughput: the last call's 200 output tokens over its 2s
+      // generation -> 100 t/s (the earlier no-step message adds no measured time).
+      expect(line).toContain('100 t/s')
       // Cache reads 600 of 100 + 400 + 600 prompt tokens -> 55% (rounded).
       expect(line).toContain('55% cache')
       test.submit('/exit')
@@ -1090,6 +1103,87 @@ describe('tui runner', () => {
     await waitFor(() => test.transcriptText().includes('error: model gone from the catalog'), 'the reload error')
     test.submit('/model')
     await waitFor(() => test.transcriptText().includes('model: test-provider/effort-model (high)'), 'the post-failure model note')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('cycles the reasoning level with Shift+Tab and shows it in the status line', async () => {
+    const test = await bench({
+      startup: {},
+      reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' },
+    })
+    const running = test.run()
+    await running.mounted
+    // Off -> first level -> next -> wraps back to the first.
+    test.press('\x1b[Z')
+    await waitFor(() => modelSegment() === 'test-model (Low)', 'the first level')
+    test.press('\x1b[Z')
+    await waitFor(() => modelSegment() === 'test-model (High)', 'the second level')
+    test.press('\x1b[Z')
+    await waitFor(() => modelSegment() === 'test-model (Low)', 'the wrapped level')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('toggles reasoning on and off with Ctrl+T, using the first level without a default', async () => {
+    const test = await bench({
+      startup: {},
+      reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] },
+    })
+    const running = test.run()
+    await running.mounted
+    // Off -> on: no default effort, so the first offered level is selected.
+    test.press('\x14')
+    await waitFor(() => modelSegment() === 'test-model (Low)', 'reasoning on')
+    // On -> off: clears the effort back to the provider default.
+    test.press('\x14')
+    await waitFor(() => modelSegment() === 'test-model', 'reasoning off')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('notes when the model exposes no reasoning levels and leaves the selection unchanged', async () => {
+    const test = await bench({ startup: {} })
+    const running = test.run()
+    await running.mounted
+    test.press('\x1b[Z')
+    await waitFor(() => test.transcriptText().includes('no reasoning levels for this model'), 'the cycle note')
+    expect(modelSegment()).toBe('test-model')
+    test.press('\x14')
+    await waitFor(() => test.transcriptText().includes('no reasoning levels for this model'), 'the toggle note')
+    expect(modelSegment()).toBe('test-model')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('shows the raw reasoning id in the status line when the model reports no level names', async () => {
+    const test = await bench({ startup: {} })
+    const running = test.run()
+    await running.mounted
+    test.setDefaultModel({ provider: 'test-provider', model: 'effort-model', reasoningEffort: 'high' })
+    test.submit('/reload')
+    await waitFor(() => test.transcriptText().includes('reloaded: test-provider/effort-model (high)'), 'the reload note')
+    expect(modelSegment()).toBe('effort-model (high)')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('shows the raw reasoning id when the level is absent from the model reported levels', async () => {
+    const test = await bench({
+      startup: {},
+      reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] },
+    })
+    const running = test.run()
+    await running.mounted
+    test.setDefaultModel({ provider: 'test-provider', model: 'test-model', reasoningEffort: 'medium' })
+    test.submit('/reload')
+    await waitFor(() => test.transcriptText().includes('reloaded: test-provider/test-model (medium)'), 'the reload note')
+    expect(modelSegment()).toBe('test-model (medium)')
     test.submit('/exit')
     expect(await running.code).toBe(0)
     await test.ctx.fiber.dispose()
