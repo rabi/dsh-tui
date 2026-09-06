@@ -286,6 +286,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       for (const controller of commandAborts) controller.abort()
       agent.cancel({ kind: 'user' })
       disposeEvents()
+      disposeStream()
       disposeApproval()
       await tui.stop()
       await sessions.flush(agent.session)
@@ -501,12 +502,6 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
         // happens after the message, so it is excluded from tok/s).
         lastStepStartMs = event.time
         return
-      case 'assistant/chunk': {
-        const chunk = event.data.chunk
-        if (chunk.type === 'text-delta') (draft ??= tui.beginAssistant()).textDelta(chunk.text)
-        else if (chunk.type === 'reasoning-delta') (draft ??= tui.beginAssistant()).reasoningDelta(chunk.text)
-        return
-      }
       case 'assistant/message': {
         const usage = event.data.usage
         if (usage !== undefined) {
@@ -619,6 +614,19 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
   const disposeEvents = ctx.on('session/event', (session, event) => {
     if (session !== agent.session) return
     applyEvent(event)
+  })
+
+  // Live per-token deltas arrive as agent-scoped stream frames, not session
+  // events: the loop appends one final assistant/message carrying the whole
+  // stream, so following only the durable log would paint the answer as a
+  // single blob. The frame feed renders it incrementally; the durable
+  // assistant/message still settles the draft with the canonical text.
+  const disposeStream = ctx.on('agent/assistant-stream', ({ agent: subject, frame }) => {
+    if (subject !== agent) return
+    if (frame.type !== 'chunk') return
+    const chunk = frame.chunk
+    if (chunk.type === 'text-delta') (draft ??= tui.beginAssistant()).textDelta(chunk.text)
+    else if (chunk.type === 'reasoning-delta') (draft ??= tui.beginAssistant()).reasoningDelta(chunk.text)
   })
 
   const disposeApproval = ctx.on('approval/request', async (req, next) => {

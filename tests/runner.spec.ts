@@ -3,9 +3,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
-import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, AssistantStreamFrame, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
 import AgentDefaultModelConfig, { AGENT_DEFAULT_MODEL_SETTINGS_NAMESPACE } from '@deepseek-ai/dsh-agent-default-model'
-import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createToolResultMessage, createUserMessage, LlmAttemptId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import SessionStore, { SessionSeq } from '@deepseek-ai/dsh-session'
@@ -134,7 +134,7 @@ interface FakeCommandDefinition {
 interface BenchOptions {
   startup?: TuiStartupValues
   before?(session: Session): void
-  afterPrompt?(session: Session, message: UserMessage): Promise<void> | void
+  afterPrompt?(session: Session, message: UserMessage, ctx: Context, agent: Agent): Promise<void> | void
   resumeHistory?(session: Session): void
   /** Reject agent creation with this value. */
   failCreateWith?: unknown
@@ -328,7 +328,7 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
       followup: (message: UserMessage) => {
         followups.push(message)
         handleAgent.inbox.append('next-turn', message)
-        void Promise.resolve().then(() => benchOptions.afterPrompt?.(session, message))
+        void Promise.resolve().then(() => benchOptions.afterPrompt?.(session, message, ctx, handleAgent))
       },
       steer: (message: UserMessage) => {
         steers.push(message)
@@ -442,22 +442,27 @@ describe('tui runner', () => {
   it('streams a prompt round trip into the transcript and exits 0 on /exit', async () => {
     const test = await bench({
       startup: {},
-      afterPrompt(session, message) {
+      afterPrompt(session, message, ctx, agent) {
         session.append('turn/start', { turn: 1 })
         session.append('step/start', { turn: 1, step: 1 })
         session.append('user/message', message, { surfaceOp: 'append' })
-        session.append('assistant/chunk', {
-          turn: 1, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' },
+        // Live per-token deltas arrive as agent-scoped stream frames, not
+        // session events; the durable assistant/message settles the draft.
+        const attemptId = LlmAttemptId(`${String(session.id)}:1`)
+        const emitFrame = (frame: AssistantStreamFrame): void => {
+          ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', { agent, frame })
+        }
+        emitFrame({ type: 'start', attemptId, revision: 1, turn: 1, step: 1 })
+        // A foreign agent's frame must be ignored by this surface.
+        const foreign = {} as Agent
+        ctx.emit(scopeTarget(agent, agent), 'agent/assistant-stream', {
+          agent: foreign,
+          frame: { type: 'chunk', attemptId, revision: 1, index: 0, time: Date.now(), chunk: { type: 'text-delta', index: 0, text: 'foreign' } },
         })
-        session.append('assistant/chunk', {
-          turn: 1, step: 1, chunk: { type: 'reasoning-delta', index: 0, text: 'thinking…' },
-        })
-        session.append('assistant/chunk', {
-          turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'hi ' },
-        })
-        session.append('assistant/chunk', {
-          turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'there' },
-        })
+        emitFrame({ type: 'chunk', attemptId, revision: 1, index: 0, time: Date.now(), chunk: { type: 'block-start', index: 0, blockType: 'text' } })
+        emitFrame({ type: 'chunk', attemptId, revision: 1, index: 1, time: Date.now(), chunk: { type: 'reasoning-delta', index: 0, text: 'thinking…' } })
+        emitFrame({ type: 'chunk', attemptId, revision: 1, index: 2, time: Date.now(), chunk: { type: 'text-delta', index: 0, text: 'hi ' } })
+        emitFrame({ type: 'chunk', attemptId, revision: 1, index: 3, time: Date.now(), chunk: { type: 'text-delta', index: 0, text: 'there' } })
         session.append('assistant/message', {
           turn: 1,
           step: 1,
@@ -471,6 +476,7 @@ describe('tui runner', () => {
             source: { provider: 'test-provider', model: 'test-model' },
           }),
         }, { surfaceOp: 'append' })
+        emitFrame({ type: 'end', attemptId, revision: 1, index: 4, outcome: { kind: 'committed', eventType: 'assistant/message', seq: SessionSeq(0) } })
         session.append('step/end', { turn: 1, step: 1 })
         session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
       },
