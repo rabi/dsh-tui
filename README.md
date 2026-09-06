@@ -14,7 +14,8 @@ Keys:
 
 | Key | Action |
 | --- | --- |
-| `Enter` | send the prompt; queues a follow-up turn while one is running |
+| `Enter` | send the prompt; steers the active turn while one is running, else starts a new turn |
+| `Ctrl+Enter` | queue the prompt as its own follow-up turn, even while a turn is running (needs a terminal that sends a distinct Ctrl+Enter; otherwise behaves like `Enter`) |
 | `Shift+Enter` | newline in the editor |
 | `Tab` | complete slash commands and file paths |
 | `Escape` | cancel the active turn (like `Ctrl+C` while running) |
@@ -32,8 +33,8 @@ Keys:
 
 ## Behavior
 
-### Follow-up queue
-Prompts sent while a turn is running queue as follow-up turns and render as dim `⏳` lines above the editor. Cancelling the turn (or `Alt+Up`) pulls the queued texts back into the editor for re-editing.
+### Steering and follow-ups
+A prompt sent while a turn is running **steers** it: the line is injected at the turn's next step boundary so it redirects the work in flight, rather than waiting for a new turn. A prompt sent while idle starts an ordinary follow-up turn. To queue a follow-up *while* a turn runs — so it waits for its own turn instead of steering — send it with `Ctrl+Enter`. Pending input — steering awaiting its step boundary and follow-ups awaiting their own turn — renders as dim `⏳` lines above the editor; cancelling the turn (or `Alt+Up`) pulls those texts back into the editor for re-editing.
 
 ### Slash-command completion
 Typing `/` at the start of a message offers slash-command completion — the TUI's own shortcuts, commands registered by the profile, and user-invocable skills — with `Tab` completing the highlighted entry; file paths complete from the working directory. The roster tracks registry changes live, so commands added or removed at runtime appear in the dropdown without a restart.
@@ -62,7 +63,7 @@ A braille spinner animates while a turn runs — including long tool calls — s
 - **Total** — cumulative tokens spent this session (`Σ 45.2k`), distinct from the current context fill; shown once tokens are spent.
 - **Throughput** — the last call's output tokens over its generation time (`128 t/s`); tool execution excluded, so it tracks current model speed. Shown once a call has completed.
 - **Cache** — share of prompt tokens served from cache (`66% cache`); shown only once cache reads are observed.
-- **Key hints** — follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^x copy · ^g edit · ^t think · shift+tab level · ^c/^d quit`, the `shift+tab level` hint only when the model offers levels), running shows `esc/^c cancel` plus `alt+↑ dequeue` while follow-ups are queued.
+- **Key hints** — follow the state: idle shows the input shortcuts (`⏎ send · tab complete · ^o tools · ^x copy · ^g edit · ^t think · shift+tab level · ^c/^d quit`, the `shift+tab level` hint only when the model offers levels), running shows `⏎ steer · ^⏎ follow-up · esc/^c cancel` plus `alt+↑ dequeue` while input is pending.
 
 ## Install into a profile
 

@@ -176,6 +176,9 @@ interface Bench {
   agent: Agent
   createdSessionIds: string[]
   followups(): UserMessage[]
+  steers(): UserMessage[]
+  /** Flip the fake agent's live status so steer-vs-follow-up routing can be exercised. */
+  setAgentStatus(status: 'idle' | 'running'): void
   cancels(): Array<{ kind: string }>
   registeredCommands: Array<{ name: string; handler: (invocation: { rawInput: string }) => unknown }>
   transcriptText(): string
@@ -304,6 +307,7 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
   }
 
   const followups: UserMessage[] = []
+  const steers: UserMessage[] = []
   const cancels: Array<{ kind: string }> = []
   const createdSessionIds: string[] = []
   let agent: Agent | undefined
@@ -326,7 +330,10 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
         handleAgent.inbox.append('next-turn', message)
         void Promise.resolve().then(() => benchOptions.afterPrompt?.(session, message))
       },
-      steer: () => {},
+      steer: (message: UserMessage) => {
+        steers.push(message)
+        handleAgent.inbox.append('next-step', message)
+      },
       inject: () => {},
       whenIdle: () => Promise.resolve(),
     })
@@ -377,6 +384,11 @@ async function bench(benchOptions: BenchOptions): Promise<Bench> {
     },
     createdSessionIds,
     followups: () => followups,
+    steers: () => steers,
+    setAgentStatus: (status: 'idle' | 'running'): void => {
+      if (agent === undefined) throw new Error('no agent created yet')
+      ;(agent as unknown as { status: string }).status = status
+    },
     cancels: () => cancels,
     registeredCommands,
     transcriptText: (): string => {
@@ -477,6 +489,31 @@ describe('tui runner', () => {
     expect(running.err()).toBe('')
     const sent = test.followups()[0]
     expect(sent?.content.filter(b => b.type === 'text').map(b => b.text).join('')).toBe('hello')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('steers a running turn with a new message and queues a follow-up when idle', async () => {
+    const test = await bench({ startup: {} })
+    const running = test.run()
+    await running.mounted
+    // While a turn runs, a typed line steers: it parks at the next step boundary
+    // rather than joining the follow-up queue.
+    test.setAgentStatus('running')
+    test.submit('redirect me')
+    await waitFor(() => test.steers().length === 1, 'the steer')
+    expect(test.followups()).toHaveLength(0)
+    expect(test.agent.inbox.nextStep).toHaveLength(1)
+    expect(test.agent.inbox.nextTurn).toHaveLength(0)
+    expect(test.steers()[0]?.content.filter(b => b.type === 'text').map(b => b.text).join('')).toBe('redirect me')
+    // Idle, the same line queues an ordinary follow-up turn instead.
+    test.setAgentStatus('idle')
+    test.submit('afterwards')
+    await waitFor(() => test.followups().length === 1, 'the followup')
+    expect(test.steers()).toHaveLength(1)
+    expect(test.agent.inbox.nextTurn).toHaveLength(1)
+    expect(test.agent.inbox.nextStep).toHaveLength(1)
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
     await test.ctx.fiber.dispose()
   })
 
@@ -947,24 +984,47 @@ describe('tui runner', () => {
     await test.ctx.fiber.dispose()
   })
 
-  it('queues follow-ups while running, renders them, and dequeues with Alt+Up', async () => {
+  it('steers while running, renders pending input, and dequeues with Alt+Up', async () => {
     const test = await bench({ startup: {} })
     const running = test.run()
     await running.mounted
     const { agent } = test
     ;(agent as unknown as { status: string }).status = 'running'
-    test.submit('first prompt')
-    test.submit('queued prompt')
-    expect(test.followups()).toHaveLength(2)
+    test.submit('first steer')
+    test.submit('second steer')
+    expect(test.steers()).toHaveLength(2)
+    expect(test.followups()).toHaveLength(0)
     const queueLine = captured.screens[0]?.children[2] as { render(width: number): string[] } | undefined
     if (queueLine === undefined) throw new Error('queue line not mounted')
     const lines = queueLine.render(120).join('\n')
-    expect(lines).toContain('first prompt')
-    expect(lines).toContain('queued prompt')
+    expect(lines).toContain('first steer')
+    expect(lines).toContain('second steer')
     test.press('\x1bp')
-    expect(agent.inbox.nextTurn).toHaveLength(0)
+    expect(agent.inbox.nextStep).toHaveLength(0)
     const editor = captured.editors[0] as unknown as { text: string }
-    expect(editor.text).toContain('queued prompt')
+    expect(editor.text).toContain('second steer')
+    test.submit('/exit')
+    expect(await running.code).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('queues a follow-up turn on Ctrl+Enter even while a turn runs', async () => {
+    const test = await bench({ startup: {} })
+    const running = test.run()
+    await running.mounted
+    const { agent } = test
+    test.setAgentStatus('running')
+    const editor = captured.editors[0] as unknown as { setText(text: string): void } | undefined
+    if (editor === undefined) throw new Error('editor not mounted')
+    editor.setText('run this after the current turn')
+    // Ctrl+Enter (Kitty CSI-u) queues its own follow-up turn; it does not steer.
+    test.press('\x1b[13;5u')
+    expect(test.steers()).toHaveLength(0)
+    expect(test.followups()).toHaveLength(1)
+    expect(agent.inbox.nextTurn).toHaveLength(1)
+    expect(agent.inbox.nextStep).toHaveLength(0)
+    const sent = test.followups()[0]
+    expect(sent?.content.filter(b => b.type === 'text').map(b => b.text).join('')).toBe('run this after the current turn')
     test.submit('/exit')
     expect(await running.code).toBe(0)
     await test.ctx.fiber.dispose()

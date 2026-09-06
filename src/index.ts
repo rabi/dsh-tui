@@ -317,6 +317,24 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
     return candidates.some(candidate => candidate.name === name && candidate.invocation.userInvocable)
   }
 
+  // A user line becomes one message; the inbox target is picked from the live
+  // status. A plain typed line either steers a running turn — injected at its
+  // next step boundary so it redirects the work in flight — or queues an
+  // ordinary follow-up turn when idle. An explicit follow-up (Ctrl+Enter) always
+  // queues its own turn, even while one runs. The agent owns the turn boundary.
+  const sendUserMessage = (text: string) =>
+    createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+
+  const dispatchUserLine = (text: string): void => {
+    const message = sendUserMessage(text)
+    if (agent.status === 'running') agent.steer(message)
+    else agent.followup(message)
+  }
+
+  const queueFollowUp = (text: string): void => {
+    agent.followup(sendUserMessage(text))
+  }
+
   const runCommand = async (line: string): Promise<void> => {
     const controller = new AbortController()
     commandAborts.push(controller)
@@ -331,7 +349,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
     }
     if (await isSkillInvocation(line, controller.signal)) {
-      agent.followup(createUserMessage({ content: [{ type: 'text', text: line }], source: { kind: 'user' } }))
+      dispatchUserLine(line)
       return
     }
     tui.addNote(`unknown command: ${line.split(/\s+/u)[0]}`)
@@ -414,7 +432,7 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
       }
       if (text === '/help') {
         tui.addNote('commands: /help · /clear · /compact · /model · /reload · /feedback · /goal · /exit · /<skill>')
-        tui.addNote('keys: ⏎ send · shift+⏎ newline · tab complete · ^o tools · esc/^c cancel · alt+↑ dequeue')
+        tui.addNote('keys: ⏎ send (steers a running turn) · ^⏎ follow-up · shift+⏎ newline · tab complete · ^o tools · esc/^c cancel · alt+↑ dequeue')
         tui.addNote('       ^t think · shift+tab level · ^c/^d quit')
         return
       }
@@ -422,16 +440,27 @@ async function run(ctx: Context, exit: (code: number) => void): Promise<void> {
         void runCommand(text)
         return
       }
-      agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+      dispatchUserLine(text)
+    },
+    // Ctrl+Enter queues the line as its own follow-up turn, even while a turn
+    // runs (plain Enter steers instead). Not routed through runCommand: a queued
+    // follow-up is delivered to the model as an ordinary user message.
+    onFollowUp: (text: string): void => {
+      queueFollowUp(text)
     },
     onCancel: (): void => { agent.cancel({ kind: 'user' }) },
     onExit: (): void => {
       void shutdown()
     },
-    queue: () => agent.inbox.nextTurn.map(m => joinText(m.content)),
-    // One synchronous splice removes exactly what it reports; the TUI puts
-    // those texts back into the editor (the alt+Up dequeue).
-    onDequeue: (): string[] => agent.inbox.splice('next-turn', 0, agent.inbox.nextTurn.length, []).map(m => joinText(m.content)),
+    // Pending input, oldest first: steering awaiting the next step boundary,
+    // then follow-ups awaiting their own turn. Both surface as dim queue lines.
+    queue: () => [...agent.inbox.nextStep, ...agent.inbox.nextTurn].map(m => joinText(m.content)),
+    // One synchronous splice per list removes exactly what it reports; the TUI
+    // puts those texts back into the editor (the alt+Up dequeue).
+    onDequeue: (): string[] => [
+      ...agent.inbox.splice('next-step', 0, agent.inbox.nextStep.length, []),
+      ...agent.inbox.splice('next-turn', 0, agent.inbox.nextTurn.length, []),
+    ].map(m => joinText(m.content)),
     // The status line shows the active level's display name (the effort id is
     // opaque); `available` gates the think hint to models that expose levels.
     reasoning: () => {

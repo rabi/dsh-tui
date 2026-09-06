@@ -93,6 +93,7 @@ function stripAnsi(text: string): string {
 
 function mount(options?: Partial<Parameters<typeof createTui>[0]>) {
   const submitted: string[] = []
+  const followUps: string[] = []
   const cancels: string[] = []
   const exits: string[] = []
   let running = false
@@ -104,6 +105,7 @@ function mount(options?: Partial<Parameters<typeof createTui>[0]>) {
     isRunning: () => running,
     context: () => ({ used: 0, window: 164_000 }),
     onSubmit: (text: string) => { submitted.push(text) },
+    onFollowUp: (text: string) => { followUps.push(text) },
     onCancel: () => { cancels.push('cancel'); queue = [] },
     onExit: () => { exits.push('exit') },
     queue: () => queue,
@@ -128,7 +130,7 @@ function mount(options?: Partial<Parameters<typeof createTui>[0]>) {
   }
   return {
     handle, screen, editor, transcript, approvalLine, queueLine, status,
-    submitted, cancels, exits, dequeues,
+    submitted, followUps, cancels, exits, dequeues,
     setRunning: (v: boolean): void => { running = v },
     setQueue: (v: string[]): void => { queue = v },
   }
@@ -194,8 +196,12 @@ describe('createTui', () => {
     expect(line()).toContain('^g edit')
     expect(line()).toContain('^c/^d quit')
     expect(line()).not.toContain('esc/^c cancel')
+    expect(line()).not.toContain('⏎ steer')
+    expect(line()).not.toContain('^⏎ follow-up')
     test.setRunning(true)
-    // Running: cancelling leads; no queue yet, so no dequeue hint.
+    // Running: steering and cancelling lead; no queue yet, so no dequeue hint.
+    expect(line()).toContain('⏎ steer')
+    expect(line()).toContain('^⏎ follow-up')
     expect(line()).toContain('esc/^c cancel')
     expect(line()).not.toContain('alt+↑ dequeue')
     expect(line()).not.toContain('⏎ send')
@@ -273,6 +279,31 @@ describe('createTui', () => {
     submit('hello')
     expect(test.submitted).toEqual(['hello'])
     expect(test.editor.history).toEqual(['hello'])
+  })
+
+  it('queues a follow-up turn on Ctrl+Enter, clearing the editor and recording history', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    test.editor.setText('do this after')
+    // Plain Enter is not the follow-up key; only the distinct Ctrl+Enter sequence is.
+    expect(key('\r')).toBeUndefined()
+    expect(test.followUps).toEqual([])
+    expect(key('\x1b[13;5u')).toEqual({ consume: true })
+    expect(test.followUps).toEqual(['do this after'])
+    expect(test.submitted).toEqual([])
+    expect(test.editor.text).toBe('')
+    expect(test.editor.history).toEqual(['do this after'])
+  })
+
+  it('ignores Ctrl+Enter when the editor is empty', () => {
+    const test = mount()
+    const key = test.screen.listeners[0]
+    if (key === undefined) throw new Error('no key listener')
+    test.editor.setText('   ')
+    expect(key('\x1b[13;5u')).toEqual({ consume: true })
+    expect(test.followUps).toEqual([])
+    expect(test.editor.text).toBe('   ')
   })
 
   it('routes Ctrl+C by running state and Ctrl+D to exit, consuming both', () => {

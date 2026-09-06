@@ -358,7 +358,7 @@ class StatusLine implements Component {
   }
 }
 
-/** One dim line per queued follow-up message, rendered above the editor. */
+/** One dim line per pending input (steering or follow-up), rendered above the editor. */
 class QueueLine implements Component {
   constructor(private readonly texts: () => string[]) {}
   /** The lines recompute from the live queue each frame. */
@@ -451,13 +451,18 @@ export interface TuiOptions {
   context: () => ContextUsage
   /** One submitted editor text (trimmed, non-empty). */
   onSubmit: (text: string) => void
+  /**
+   * One queued follow-up turn (Ctrl+Enter): always its own turn, even while a
+   * turn is running (plain Enter steers instead). Omit to disable the binding.
+   */
+  onFollowUp?: (text: string) => void
   /** Cancel request: Ctrl+C or Escape while work is active. */
   onCancel: () => void
   /** Quit request (Ctrl+C idle, Ctrl+D, /exit). */
   onExit: () => void
-  /** Texts of pending follow-up messages, oldest first; empty when none. */
+  /** Texts of pending input (steering and follow-ups), oldest first; empty when none. */
   queue?: () => string[]
-  /** Atomically remove every pending follow-up; returns their texts, oldest first. */
+  /** Atomically remove every pending input; returns their texts, oldest first. */
   onDequeue?: () => string[]
   /** Directory inside a git repository for the status line's branch segment; omit to hide it. */
   gitCwd?: string
@@ -597,10 +602,10 @@ export function createTui(options: TuiOptions): TuiHandle {
     // Ctrl+T hides thinking blocks regardless of model; Shift+Tab cycles levels
     // only when the model offers them, so the level hint follows availability.
     const thinkHint = reasoning?.available ? '^t think · shift+tab level' : '^t think'
-    // Hints follow the state: while a turn runs, cancelling (and pulling
-    // queued follow-ups back) is what matters; idle, the input shortcuts.
+    // Hints follow the state: while a turn runs, steering it (and cancelling, or
+    // pulling pending input back) is what matters; idle, the input shortcuts.
     const hints = running
-      ? ['esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
+      ? ['⏎ steer', '^⏎ follow-up', 'esc/^c cancel', ...(queueTexts().length > 0 ? ['alt+↑ dequeue'] : []), '^o tools']
       : ['⏎ send', 'tab complete', '^o tools', '^x copy', '^g edit', thinkHint, '^c/^d quit']
     return `${prefix}${modelText}${branch === undefined ? '' : ` ⎇ ${branch}`} · ${running ? 'running' : 'idle'} · ${ctxText} ctx${totalText}${tpsText}${cacheText} · ${hints.join(' · ')}`
   })
@@ -658,7 +663,7 @@ export function createTui(options: TuiOptions): TuiHandle {
     },
   })
 
-  /** Cancel the active turn; queued follow-ups come back into the editor. */
+  /** Cancel the active turn; pending input (steering and follow-ups) comes back into the editor. */
   const cancelWithRestore = (): void => {
     const queued = queueTexts()
     options.onCancel()
@@ -705,8 +710,8 @@ export function createTui(options: TuiOptions): TuiHandle {
       cancelWithRestore()
       return { consume: true }
     }
-    // Alt+Up pulls every queued follow-up back into the editor (pi's dequeue);
-    // the turn keeps running.
+    // Alt+Up pulls every pending input (steering and follow-ups) back into the
+    // editor (pi's dequeue); the turn keeps running.
     if (matchesKey(data, 'alt+up')) {
       const removed = options.onDequeue?.()
       if (removed !== undefined && removed.length > 0) {
@@ -746,6 +751,21 @@ export function createTui(options: TuiOptions): TuiHandle {
     // app.thinking.toggle); always available, so always consumed.
     if (matchesKey(data, 'ctrl+t')) {
       transcript.toggleThinkingHidden()
+      return { consume: true }
+    }
+    // Ctrl+Enter queues the current text as a follow-up turn — its own turn —
+    // even while one runs (plain Enter steers instead). Only distinguishable on
+    // terminals that emit a distinct Ctrl+Enter sequence (Kitty/WezTerm/…); on a
+    // basic terminal it reads as plain Enter and steers. Consumed either way so
+    // the editor never double-processes the distinct sequence.
+    if (matchesKey(data, 'ctrl+enter')) {
+      const text = editor.getText().trim()
+      if (text !== '') {
+        editor.addToHistory(text)
+        options.onFollowUp?.(text)
+        editor.setText('')
+        tui.requestRender()
+      }
       return { consume: true }
     }
     if (data === '\x04') {
