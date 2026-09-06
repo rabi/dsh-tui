@@ -422,9 +422,11 @@ export function createApprovalGate(deps: ApprovalGateDeps) {
         lineShown = true
         deps.setLine(S.yellow(`⚠ Allow ${question}? [y/n]`))
         deps.requestRender()
+        // Consume the answer keys so they don't fall through to the focused
+        // editor and land as stray characters in the user's message.
         removeListener = deps.addListener((data) => {
-          if (data === 'y' || data === 'Y') finish('allowed-once')
-          else if (data === 'n' || data === 'N') finish('rejected')
+          if (data === 'y' || data === 'Y') { finish('allowed-once'); return { consume: true } }
+          else if (data === 'n' || data === 'N') { finish('rejected'); return { consume: true } }
         })
       })
       if (activeFinish === undefined) {
